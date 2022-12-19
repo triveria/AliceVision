@@ -10,7 +10,7 @@
 #include <aliceVision/mesh/Texturing.hpp>
 #include <aliceVision/mesh/meshVisibility.hpp>
 #include <aliceVision/mesh/meshPostProcessing.hpp>
-#include <aliceVision/mvsData/imageIO.hpp>
+#include <aliceVision/image/io.hpp>
 #include <aliceVision/mvsUtils/common.hpp>
 #include <aliceVision/mvsUtils/MultiViewParams.hpp>
 #include <aliceVision/mvsUtils/ImagesCache.hpp>
@@ -44,7 +44,6 @@ int aliceVision_main(int argc, char* argv[])
 {
     system::Timer timer;
 
-    std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
     std::string sfmDataFilename;
 
     std::string inputMeshFilepath;    // Model to texture (HighPoly for diffuse, LowPoly for Diffuse+Normal)
@@ -53,7 +52,7 @@ int aliceVision_main(int argc, char* argv[])
 
     std::string outputFolder;
     std::string imagesFolder;
-    std::string processColorspaceName = imageIO::EImageColorSpace_enumToString(imageIO::EImageColorSpace::SRGB);
+    std::string processColorspaceName = image::EImageColorSpace_enumToString(image::EImageColorSpace::SRGB);
     bool flipNormals = false;
     bool correctEV = false;
 
@@ -62,10 +61,8 @@ int aliceVision_main(int argc, char* argv[])
     std::string visibilityRemappingMethod = mesh::EVisibilityRemappingMethod_enumToString(texParams.visibilityRemappingMethod);
 
     mesh::BumpMappingParams bumpMappingParams;
-    imageIO::EImageFileType normalFileType;
-    imageIO::EImageFileType heightFileType;
-
-    po::options_description allParams("AliceVision texturing");
+    image::EImageFileType normalFileType;
+    image::EImageFileType heightFileType;
 
     po::options_description requiredParams("Required parameters");
     requiredParams.add_options()
@@ -89,14 +86,14 @@ int aliceVision_main(int argc, char* argv[])
             "Texture downscale factor")
         ("outputMeshFileType", po::value<aliceVision::mesh::EFileType>(&outputMeshFileType)->default_value(aliceVision::mesh::EFileType::OBJ),
             "output mesh file type")
-        ("colorMappingFileType", po::value<imageIO::EImageFileType>(&texParams.textureFileType)->default_value(texParams.textureFileType),
-          imageIO::EImageFileType_informations().c_str())(
-        "heightFileType", po::value<imageIO::EImageFileType>(&heightFileType)->default_value(imageIO::EImageFileType::NONE),
-            imageIO::EImageFileType_informations().c_str())
-        ("normalFileType", po::value<imageIO::EImageFileType>(&normalFileType)->default_value(imageIO::EImageFileType::NONE),
-            imageIO::EImageFileType_informations().c_str())
-        ("displacementMappingFileType", po::value<imageIO::EImageFileType>(&bumpMappingParams.displacementFileType)->default_value(bumpMappingParams.displacementFileType),
-            imageIO::EImageFileType_informations().c_str())
+        ("colorMappingFileType", po::value<image::EImageFileType>(&texParams.textureFileType)->default_value(texParams.textureFileType),
+          image::EImageFileType_informations().c_str())
+        ("heightFileType", po::value<image::EImageFileType>(&heightFileType)->default_value(image::EImageFileType::NONE),
+            image::EImageFileType_informations().c_str())
+        ("normalFileType", po::value<image::EImageFileType>(&normalFileType)->default_value(image::EImageFileType::NONE),
+            image::EImageFileType_informations().c_str())
+        ("displacementMappingFileType", po::value<image::EImageFileType>(&bumpMappingParams.displacementFileType)->default_value(bumpMappingParams.displacementFileType),
+            image::EImageFileType_informations().c_str())
         ("bumpType", po::value<mesh::EBumpMappingType>(&bumpMappingParams.bumpType)->default_value(bumpMappingParams.bumpType),
             "Use HeightMap for displacement or bump mapping")
         ("unwrapMethod", po::value<std::string>(&unwrapMethod)->default_value(unwrapMethod),
@@ -136,53 +133,21 @@ int aliceVision_main(int argc, char* argv[])
         ("subdivisionTargetRatio", po::value<float>(&texParams.subdivisionTargetRatio)->default_value(texParams.subdivisionTargetRatio),
             "Percentage of the density of the reconstruction as the target for the subdivision (0: disable subdivision, 0.5: half density of the reconstruction, 1: full density of the reconstruction).");
 
-    po::options_description logParams("Log parameters");
-    logParams.add_options()
-      ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-        "verbosity level (fatal, error, warning, info, debug, trace).");
 
-    allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-    po::variables_map vm;
-
-    try
+    CmdLine cmdline("AliceVision texturing");
+    cmdline.add(requiredParams);
+    cmdline.add(optionalParams);
+    if (!cmdline.execute(argc, argv))
     {
-      po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-      if(vm.count("help") || (argc == 1))
-      {
-        ALICEVISION_COUT(allParams);
-        return EXIT_SUCCESS;
-      }
-
-      po::notify(vm);
+        return EXIT_FAILURE;
     }
-    catch(boost::program_options::required_option& e)
-    {
-      ALICEVISION_CERR("ERROR: " << e.what() << std::endl);
-      ALICEVISION_COUT("Usage:\n\n" << allParams);
-      return EXIT_FAILURE;
-    }
-    catch(boost::program_options::error& e)
-    {
-      ALICEVISION_CERR("ERROR: " << e.what() << std::endl);
-      ALICEVISION_COUT("Usage:\n\n" << allParams);
-      return EXIT_FAILURE;
-    }
-
-    ALICEVISION_COUT("Program called with the following parameters:");
-    ALICEVISION_COUT(vm);
-
     // set bump mapping file type
     bumpMappingParams.bumpMappingFileType = (bumpMappingParams.bumpType == mesh::EBumpMappingType::Normal) ? normalFileType : heightFileType;
-
-    // set verbose level
-    system::Logger::get()->setLogLevel(verboseLevel);
 
     GEO::initialize();
 
     texParams.visibilityRemappingMethod = mesh::EVisibilityRemappingMethod_stringToEnum(visibilityRemappingMethod);
-    texParams.processColorspace = imageIO::EImageColorSpace_stringToEnum(processColorspaceName);
+    texParams.processColorspace = image::EImageColorSpace_stringToEnum(processColorspaceName);
 
     texParams.correctEV = mvsUtils::ECorrectEV::NO_CORRECTION;
     if(correctEV) { texParams.correctEV = mvsUtils::ECorrectEV::APPLY_CORRECTION; }
@@ -254,7 +219,7 @@ int aliceVision_main(int argc, char* argv[])
     }
 
     // generate diffuse textures
-    if(!inputMeshFilepath.empty() && !sfmDataFilename.empty() && texParams.textureFileType != imageIO::EImageFileType::NONE)
+    if(!inputMeshFilepath.empty() && !sfmDataFilename.empty() && texParams.textureFileType != image::EImageFileType::NONE)
     {
         ALICEVISION_LOG_INFO("Generate textures.");
         mesh.generateTextures(mp, outputFolder, texParams.textureFileType);
@@ -262,8 +227,8 @@ int aliceVision_main(int argc, char* argv[])
 
 
     if(!inputRefMeshFilepath.empty() && !inputMeshFilepath.empty() &&
-       (bumpMappingParams.bumpMappingFileType != imageIO::EImageFileType::NONE ||
-        bumpMappingParams.displacementFileType != imageIO::EImageFileType::NONE))
+       (bumpMappingParams.bumpMappingFileType != image::EImageFileType::NONE ||
+        bumpMappingParams.displacementFileType != image::EImageFileType::NONE))
     {
         ALICEVISION_LOG_INFO("Generate height and normal maps.");
 

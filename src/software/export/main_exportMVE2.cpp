@@ -8,11 +8,11 @@
 #include <aliceVision/sfmData/SfMData.hpp>
 #include <aliceVision/sfmDataIO/sfmDataIO.hpp>
 #include <aliceVision/image/all.hpp>
+#include <aliceVision/system/ProgressDisplay.hpp>
 #include <aliceVision/system/main.hpp>
-
+#include <aliceVision/system/cmdline.hpp>
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/progress.hpp>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -105,14 +105,14 @@ bool exportToMVE2Format(
     out << cameraCount << " " << featureCount << "\n";
 
     // Export (calibrated) views as undistorted images
-    boost::progress_display my_progress_bar(sfm_data.getViews().size());
+    auto progressDisplay = system::createConsoleProgressDisplay(sfm_data.getViews().size(), std::cout);
     std::pair<int,int> w_h_image_size;
     Image<RGBColor> image, image_ud, thumbnail;
     std::string sOutViewIteratorDirectory;
     std::size_t view_index = 0;
     std::map<std::size_t, IndexT> viewIdToviewIndex;
     for(Views::const_iterator iter = sfm_data.getViews().begin();
-      iter != sfm_data.getViews().end(); ++iter, ++my_progress_bar)
+      iter != sfm_data.getViews().end(); ++iter, ++progressDisplay)
     {
       const View * view = iter->second.get();
 
@@ -142,7 +142,8 @@ bool exportToMVE2Format(
         // Undistort and save the image
         readImage(srcImage, image, image::EImageColorSpace::NO_CONVERSION);
         UndistortImage(image, cam, image_ud, BLACK);
-        writeImage(dstImage, image_ud, image::EImageColorSpace::NO_CONVERSION);
+        writeImage(dstImage, image_ud,
+                   image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
       }
       else // (no distortion)
       {
@@ -155,7 +156,8 @@ bool exportToMVE2Format(
         else
         {
           readImage( srcImage, image, image::EImageColorSpace::NO_CONVERSION);
-          writeImage( dstImage, image, image::EImageColorSpace::NO_CONVERSION);
+          writeImage(dstImage, image,
+                     image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
         }
       }
 
@@ -208,7 +210,8 @@ bool exportToMVE2Format(
       // Save a thumbnail image "thumbnail.png", 50x50 pixels
       thumbnail = create_thumbnail(image, 50, 50);
       const std::string dstThumbnailImage = (fs::path(sOutViewIteratorDirectory) / "thumbnail.png").string();
-      writeImage(dstThumbnailImage, thumbnail, image::EImageColorSpace::NO_CONVERSION);
+      writeImage(dstThumbnailImage, thumbnail,
+                 image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
       
       ++view_index;
     }
@@ -245,8 +248,6 @@ bool exportToMVE2Format(
 int aliceVision_main(int argc, char *argv[])
 {
   // command-line parameters
-
-  std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
   std::string sfmDataFilename;
   std::string outDirectory;
 
@@ -260,40 +261,12 @@ int aliceVision_main(int argc, char *argv[])
       "Output folder.\n"
       "Note:  this program writes output in MVE file format");
 
-  po::options_description logParams("Log parameters");
-  logParams.add_options()
-    ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-      "verbosity level (fatal,  error, warning, info, debug, trace).");
-
-  allParams.add(requiredParams).add(logParams);
-
-  po::variables_map vm;
-  try
+  CmdLine cmdline("AliceVision exportMVE2");
+  cmdline.add(requiredParams);
+  if (!cmdline.execute(argc, argv))
   {
-    po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-    if(vm.count("help") || (argc == 1))
-    {
-      ALICEVISION_COUT(allParams);
-      return EXIT_SUCCESS;
-    }
-    po::notify(vm);
+      return EXIT_FAILURE;
   }
-  catch(boost::program_options::required_option& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-  catch(boost::program_options::error& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-
-  // set verbose level
-  system::Logger::get()->setLogLevel(verboseLevel);
 
   // Create output dir
   if (!fs::exists(outDirectory))

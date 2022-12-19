@@ -16,7 +16,6 @@
 #include <aliceVision/system/main.hpp>
 #include <aliceVision/system/cmdline.hpp>
 #include <aliceVision/image/all.hpp>
-#include <aliceVision/sfm/liealgebra.hpp>
 
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
@@ -37,55 +36,9 @@ using namespace aliceVision;
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 
-bool estimateAutomaticReferenceFrame(Eigen::Matrix3d & referenceFrameUpdate, const sfmData::SfMData & toUpdate)
-{
-  //Compute mean of the rotation X component
-  Eigen::Vector3d mean = Eigen::Vector3d::Zero();
-  for (auto& pose: toUpdate.getPoses())
-  {
-    geometry::Pose3 p = pose.second.getTransform();
-    Eigen::Vector3d rX = p.rotation().transpose() * Eigen::Vector3d::UnitX();
-    mean += rX;
-  }
-  mean /= toUpdate.getPoses().size();
-
-
-  //Compute covariance matrix of the rotation X component
-  Eigen::Matrix3d C = Eigen::Matrix3d::Zero();
-  for (auto& pose: toUpdate.getPoses())
-  {
-    geometry::Pose3 p = pose.second.getTransform();
-    Eigen::Vector3d rX = p.rotation().transpose() * Eigen::Vector3d::UnitX();
-
-    C += (rX - mean) * (rX - mean).transpose();
-  }
-
-
-  Eigen::EigenSolver<Eigen::Matrix3d> solver(C, true);
-  Eigen::Vector3d nullestSpace = solver.eigenvectors().col(2).real();
-  Eigen::Vector3d unity = Eigen::Vector3d::UnitY();
-
-  if (nullestSpace(1) < 0.0)
-  {
-    unity *= -1.0;
-  }
-
-  //Compute rotation which rotates nullestSpace onto unitY
-  Eigen::Vector3d axis = nullestSpace.cross(unity);
-  double sa = axis.norm();
-  double ca = nullestSpace.dot(unity);
-  Eigen::Matrix3d M = SO3::skew(axis);  
-  Eigen::Matrix3d R = Eigen::Matrix3d::Identity() + M + M * M * (1.0 - ca) / (sa * sa);
-
-  referenceFrameUpdate = R.transpose();
-
-  return true;
-}
-
 int aliceVision_main(int argc, char **argv)
 {
   // command-line parameters
-  std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
   std::string sfmDataFilename;
   std::vector<std::string> featuresFolders;
   std::vector<std::string> matchesFolders;
@@ -103,10 +56,6 @@ int aliceVision_main(int argc, char **argv)
   int randomSeed = std::mt19937::default_seed;
 
   sfm::ReconstructionEngine_panorama::Params params;
-
-  po::options_description allParams(
-    "Perform estimation of cameras orientation around a nodal point for 360° panorama.\n"
-    "AliceVision PanoramaEstimation");
 
   po::options_description requiredParams("Required parameters");
   requiredParams.add_options()
@@ -156,43 +105,14 @@ int aliceVision_main(int argc, char **argv)
       "This seed value will generate a sequence using a linear random generator. Set -1 to use a random seed.")
     ;
 
-  po::options_description logParams("Log parameters");
-  logParams.add_options()
-    ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-      "verbosity level (fatal, error, warning, info, debug, trace).");
-
-  allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-  po::variables_map vm;
-  try
+  CmdLine cmdline("This program performs estimation of cameras orientation around a nodal point for 360° panorama.\n"
+                  "AliceVision panoramaEstimation");
+  cmdline.add(requiredParams);
+  cmdline.add(optionalParams);
+  if (!cmdline.execute(argc, argv))
   {
-    po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-    if(vm.count("help") || (argc == 1))
-    {
-      ALICEVISION_COUT(allParams);
-      return EXIT_SUCCESS;
-    }
-    po::notify(vm);
+      return EXIT_FAILURE;
   }
-  catch(boost::program_options::required_option& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-  catch(boost::program_options::error& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-
-  ALICEVISION_COUT("Program called with the following parameters:");
-  ALICEVISION_COUT(vm);
-
-  // set verbose level
-  system::Logger::get()->setLogLevel(verboseLevel);
 
   if (params.eRotationAveragingMethod < sfm::ROTATION_AVERAGING_L1 ||
       params.eRotationAveragingMethod > sfm::ROTATION_AVERAGING_L2 )
@@ -318,13 +238,17 @@ int aliceVision_main(int argc, char **argv)
   {
     Eigen::Matrix3d ocur_R_oprior = Eigen::Matrix3d::Identity();
 
-    if (initial_poses.empty()) {
-
+    if (initial_poses.empty())
+    {
       if (useAutomaticReferenceFrame)
       {
-        estimateAutomaticReferenceFrame(ocur_R_oprior, outSfmData);
+          double S = 1.0;
+          Eigen::Matrix3d R;
+          Vec3 t;
+          sfm::computeNewCoordinateSystemFromCamerasXAxis(outSfmData, S, R, t);
+          ocur_R_oprior = R.transpose();
       }
-      else 
+      else
       {
         std::vector<std::pair<int64_t, IndexT>> sorted_views;
 
@@ -343,7 +267,7 @@ int aliceVision_main(int argc, char **argv)
         ocur_R_oprior = final_poses[poseId].getTransform().rotation().transpose();
       }
     }
-    else 
+    else
     {
       Eigen::Matrix3d c1_R_ocur = final_poses.begin()->second.getTransform().rotation();
       ocur_R_oprior = c1_R_ocur.transpose() * c1_R_oprior;
@@ -358,44 +282,6 @@ int aliceVision_main(int argc, char **argv)
       p.rotation() = c_R_oprior;
       pose.second.setTransform(p);
     }
-  }
-
-  // Handle image orientation
-  Eigen::Matrix3d R_metadata = Eigen::Matrix3d::Identity();
-  sfmData::EEXIFOrientation metadata_orientation = outSfmData.getViews().begin()->second->getMetadataOrientation();
-  switch (metadata_orientation)
-  {
-  case sfmData::EEXIFOrientation::REVERSED:
-    R_metadata = Eigen::AngleAxisd(M_PI, Vec3(0,1,0));
-    break;
-  case sfmData::EEXIFOrientation::UPSIDEDOWN:
-    R_metadata = Eigen::AngleAxisd(M_PI, Vec3(1,0,0));
-    break;
-  case sfmData::EEXIFOrientation::UPSIDEDOWN_REVERSED:
-    R_metadata = Eigen::AngleAxisd(M_PI, Vec3(1,0,0)) * Eigen::AngleAxisd(M_PI, Vec3(0,1,0));
-    break;
-  case sfmData::EEXIFOrientation::LEFT_REVERSED:
-    R_metadata = Eigen::AngleAxisd(-M_PI_2, Vec3(0,0,1)) * Eigen::AngleAxisd(M_PI, Vec3(0,1,0));
-    break;
-  case sfmData::EEXIFOrientation::LEFT:
-    R_metadata = Eigen::AngleAxisd(-M_PI_2, Vec3(0,0,1));
-    break;  
-  case sfmData::EEXIFOrientation::RIGHT_REVERSED:
-    R_metadata = Eigen::AngleAxisd(M_PI_2, Vec3(0,0,1)) * Eigen::AngleAxisd(M_PI, Vec3(0,1,0));
-    break;
-  case sfmData::EEXIFOrientation::RIGHT:
-    R_metadata = Eigen::AngleAxisd(M_PI_2, Vec3(0,0,1));
-    break;
-  default:
-    break;
-  }
-
-  for (auto & pose : outSfmData.getPoses())
-  {
-    geometry::Pose3 p = pose.second.getTransform();
-    Eigen::Matrix3d newR = p.rotation() * R_metadata;
-    p.rotation() = newR;
-    pose.second.setTransform(p);
   }
 
   // Final report

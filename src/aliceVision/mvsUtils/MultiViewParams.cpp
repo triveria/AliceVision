@@ -7,13 +7,14 @@
 #include "MultiViewParams.hpp"
 #include <aliceVision/sfmData/SfMData.hpp>
 #include <aliceVision/system/Logger.hpp>
+#include <aliceVision/image/io.hpp>
 #include <aliceVision/mvsData/geometry.hpp>
 #include <aliceVision/mvsData/Matrix3x4.hpp>
 #include <aliceVision/mvsData/Pixel.hpp>
-#include <aliceVision/mvsData/imageIO.hpp>
+#include <aliceVision/image/io.hpp>
 #include <aliceVision/mvsUtils/fileIO.hpp>
 #include <aliceVision/mvsUtils/common.hpp>
-#include <aliceVision/mvsData/imageIO.hpp>
+#include <aliceVision/image/io.hpp>
 #include <aliceVision/numeric/numeric.hpp>
 #include <aliceVision/numeric/projection.hpp>
 #include <aliceVision/utils/filesIO.hpp>
@@ -76,7 +77,8 @@ MultiViewParams::MultiViewParams(const sfmData::SfMData& sfmData,
             std::vector<std::string> paths = utils::getFilesPathsFromFolder(_imagesFolder, 
                 [&view](const fs::path& path) 
                 {
-                    return (path.stem() == std::to_string(view.getViewId()) && (imageIO::isSupportedUndistortFormat(path.extension().string())));
+                    return (path.stem() == std::to_string(view.getViewId()) &&
+                            (image::isSupportedUndistortFormat(path.extension().string())));
                 }
             );
 
@@ -122,7 +124,7 @@ MultiViewParams::MultiViewParams(const sfmData::SfMData& sfmData,
         const bool fileExists = fs::exists(imgParams.path);
         if(fileExists)
         {
-            imageIO::readImageMetadata(imgParams.path, metadata);
+            metadata = image::readImageMetadata(imgParams.path);
             scaleIt = metadata.find("AliceVision:downscale");
             pIt = metadata.find("AliceVision:P");
         }
@@ -136,8 +138,8 @@ MultiViewParams::MultiViewParams(const sfmData::SfMData& sfmData,
         else if(fileExists)
         {
             // use image dimension
-            int w, h, channels;
-            imageIO::readImageSpec(imgParams.path, w, h, channels);
+            int w, h;
+            image::readImageSize(imgParams.path, w, h);
             const int widthScale = imgParams.width / w;
             const int heightScale = imgParams.height / h;
 
@@ -232,31 +234,30 @@ MultiViewParams::MultiViewParams(const sfmData::SfMData& sfmData,
 
 void MultiViewParams::loadMatricesFromTxtFile(int index, const std::string& fileNameP, const std::string& fileNameD)
 {
-    if(!FileExists(fileNameP))
+    if (!fs::exists(fileNameP))
         throw std::runtime_error(std::string("mv_multiview_params: no such file: ") + fileNameP);
 
-    FILE* f = fopen(fileNameP.c_str(), "r");
+    std::ifstream in{fileNameP};
     char fc;
-    fscanf(f, "%c", &fc);
+    in >> fc;
     if(fc == 'C') // FURUKAWA'S PROJCTION MATRIX FILE FORMAT
     {
-        fscanf(f, "%c", &fc);   // O
-        fscanf(f, "%c", &fc);   // N
-        fscanf(f, "%c", &fc);   // T
-        fscanf(f, "%c", &fc);   // O
-        fscanf(f, "%c", &fc);   // U
-        fscanf(f, "%c\n", &fc); // R
+        in >> fc; // O
+        in >> fc; // N
+        in >> fc; // T
+        in >> fc; // O
+        in >> fc; // U
+        in >> fc; // R
     }
     else
     {
-        fclose(f);
-        f = fopen(fileNameP.c_str(), "r");
+        in.close();
+        in.open(fileNameP);
     }
 
     Matrix3x4& pMatrix = camArr.at(index);
 
-    pMatrix = load3x4MatrixFromFile(f);
-    fclose(f);
+    pMatrix = load3x4MatrixFromFile(in);
 
     // apply scale to camera matrix (camera matrix is scale 1)
     const int imgScale = _imagesScale.at(index) * _processDownscale;
@@ -268,11 +269,10 @@ void MultiViewParams::loadMatricesFromTxtFile(int index, const std::string& file
     iRArr[index] = RArr[index].inverse();
     iCamArr[index] = iRArr[index] * iKArr[index];
 
-    if(FileExists(fileNameD))
+    if (fs::exists(fileNameD))
     {
-        FILE* f = fopen(fileNameD.c_str(), "r");
-        fscanf(f, "%f %f %f", &FocK1K2Arr[index].x, &FocK1K2Arr[index].y, &FocK1K2Arr[index].z);
-        fclose(f);
+        std::ifstream inD{fileNameD};
+        inD >> FocK1K2Arr[index].x >> FocK1K2Arr[index].y >> FocK1K2Arr[index].z;
     }
 }
 
@@ -612,7 +612,7 @@ StaticVector<int> MultiViewParams::findNearestCamsFromLandmarks(int rc, int nbNe
   qsort(&ids[0], ids.size(), sizeof(SortedId), qsortCompareSortedIdDesc);
 
   // ensure the ideal number of target cameras is not superior to the actual number of cameras
-  const int maxTc = std::min(std::min(getNbCameras(), nbNearestCams), static_cast<int>(ids.size()));
+  const int maxTc = std::min({getNbCameras(), nbNearestCams, static_cast<int>(ids.size())});
   out.reserve(maxTc);
 
   for(int i = 0; i < maxTc; ++i)
@@ -655,8 +655,7 @@ StaticVector<int> MultiViewParams::findCamsWhichIntersectsHexahedron(const Point
     tcams.reserve(getNbCameras());
     for(int rc = 0; rc < getNbCameras(); rc++)
     {
-        oiio::ParamValueList metadata;
-        imageIO::readImageMetadata(getImagePath(rc), metadata);
+        const auto metadata = image::readImageMetadata(getImagePath(rc));
 
         const float minDepth = metadata.get_float("AliceVision:minDepth", -1);
         const float maxDepth = metadata.get_float("AliceVision:maxDepth", -1);

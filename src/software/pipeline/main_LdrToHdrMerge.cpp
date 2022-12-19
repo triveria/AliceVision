@@ -24,6 +24,7 @@
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
 #include <sstream>
+#include <iomanip>
 
 // These constants define the current software version.
 // They must be updated when the command line is changed.
@@ -47,7 +48,6 @@ std::string getHdrImagePath(const std::string& outputPath, std::size_t g)
 
 int aliceVision_main(int argc, char** argv)
 {
-    std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
     std::string sfmInputDataFilename;
     std::string inputResponsePath;
     std::string sfmOutputDataFilepath;
@@ -66,9 +66,6 @@ int aliceVision_main(int argc, char** argv)
     int rangeSize = 1;
 
     // Command line parameters
-    po::options_description allParams("Merge LDR images into HDR images.\n"
-                                      "AliceVision LdrToHdrMerge");
-
     po::options_description requiredParams("Required parameters");
     requiredParams.add_options()
         ("input,i", po::value<std::string>(&sfmInputDataFilename)->required(),
@@ -102,42 +99,19 @@ int aliceVision_main(int argc, char** argv)
         ("rangeSize", po::value<int>(&rangeSize)->default_value(rangeSize),
           "Range size.");
 
-    po::options_description logParams("Log parameters");
-    logParams.add_options()
-        ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-         "verbosity level (fatal, error, warning, info, debug, trace).");
-
-    allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-    po::variables_map vm;
-    try
+    CmdLine cmdline("This program merges LDR images into HDR images.\n"
+                    "AliceVision LdrToHdrMerge");
+                  
+    cmdline.add(requiredParams);
+    cmdline.add(optionalParams);
+    if (!cmdline.execute(argc, argv))
     {
-        po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-        if(vm.count("help") || (argc == 1))
-        {
-            ALICEVISION_COUT(allParams);
-            return EXIT_SUCCESS;
-        }
-        po::notify(vm);
-    }
-    catch(boost::program_options::required_option& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
-        return EXIT_FAILURE;
-    }
-    catch(boost::program_options::error& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
         return EXIT_FAILURE;
     }
 
-    ALICEVISION_COUT("Program called with the following parameters:");
-    ALICEVISION_COUT(vm);
-
-    system::Logger::get()->setLogLevel(verboseLevel);
+    // set maxThreads
+    HardwareContext hwc = cmdline.getHardwareContext();
+    omp_set_num_threads(hwc.getMaxThreads());
 
     // Analyze path
     boost::filesystem::path path(sfmOutputDataFilepath);
@@ -279,8 +253,9 @@ int aliceVision_main(int argc, char** argv)
             ALICEVISION_LOG_INFO("Load " << filepath);
 
             image::ImageReadOptions options;
-            options.outputColorSpace = image::EImageColorSpace::SRGB;
-            options.applyWhiteBalance = group[i]->getApplyWhiteBalance();
+            options.workingColorSpace = image::EImageColorSpace::SRGB;
+            options.rawColorInterpretation = image::ERawColorInterpretation_stringToEnum(group[i]->getRawColorInterpretation());
+            options.colorProfileFileName = group[i]->getColorProfileFileName();
             image::readImage(filepath, images[i], options);
 
             exposuresSetting[i] = group[i]->getCameraExposureSetting(/*targetView->getMetadataISO(), targetView->getMetadataFNumber()*/);
@@ -314,9 +289,10 @@ int aliceVision_main(int argc, char** argv)
 
         // Write an image with parameters from the target view
         oiio::ParamValueList targetMetadata = image::readImageMetadata(targetView->getImagePath());
-        targetMetadata.push_back(oiio::ParamValue("AliceVision:storageDataType", image::EStorageDataType_enumToString(storageDataType)));
-
-        image::writeImage(hdrImagePath, HDRimage, image::EImageColorSpace::AUTO, targetMetadata);
+        targetMetadata.add_or_replace(oiio::ParamValue("AliceVision:ColorSpace",
+                                                       image::EImageColorSpace_enumToString(image::EImageColorSpace::LINEAR)));
+        image::writeImage(hdrImagePath, HDRimage,
+                          image::ImageWriteOptions().storageDataType(storageDataType), targetMetadata);
     }
 
     return EXIT_SUCCESS;

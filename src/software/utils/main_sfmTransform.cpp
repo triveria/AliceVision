@@ -28,14 +28,17 @@ using namespace aliceVision;
 
 namespace po = boost::program_options;
 
+namespace {
+
 /**
  * @brief Alignment method enum
  */
-enum class EAlignmentMethod: unsigned char
+enum class EAlignmentMethod : unsigned char
 {
-  TRANSFORMATION = 0
-  , MANUAL
-  , AUTO_FROM_CAMERAS,
+    TRANSFORMATION = 0,
+    MANUAL,
+    AUTO_FROM_CAMERAS,
+    AUTO_FROM_CAMERAS_X_AXIS,
     AUTO_FROM_LANDMARKS,
     FROM_SINGLE_CAMERA,
     FROM_CENTER_CAMERA,
@@ -55,6 +58,7 @@ std::string EAlignmentMethod_enumToString(EAlignmentMethod alignmentMethod)
     case EAlignmentMethod::TRANSFORMATION:      return "transformation";
     case EAlignmentMethod::MANUAL:              return "manual";
     case EAlignmentMethod::AUTO_FROM_CAMERAS:   return "auto_from_cameras";
+    case EAlignmentMethod::AUTO_FROM_CAMERAS_X_AXIS:   return "auto_from_cameras_x_axis";
     case EAlignmentMethod::AUTO_FROM_LANDMARKS: return "auto_from_landmarks";
     case EAlignmentMethod::FROM_SINGLE_CAMERA:  return "from_single_camera";
     case EAlignmentMethod::FROM_CENTER_CAMERA:  return "from_center_camera";
@@ -77,6 +81,7 @@ EAlignmentMethod EAlignmentMethod_stringToEnum(const std::string& alignmentMetho
   if(method == "transformation")      return EAlignmentMethod::TRANSFORMATION;
   if(method == "manual")              return EAlignmentMethod::MANUAL;
   if(method == "auto_from_cameras")   return EAlignmentMethod::AUTO_FROM_CAMERAS;
+  if(method == "auto_from_cameras_x_axis")   return EAlignmentMethod::AUTO_FROM_CAMERAS_X_AXIS;
   if(method == "auto_from_landmarks") return EAlignmentMethod::AUTO_FROM_LANDMARKS;
   if(method == "from_single_camera")  return EAlignmentMethod::FROM_SINGLE_CAMERA;
   if(method == "from_center_camera")  return EAlignmentMethod::FROM_CENTER_CAMERA;
@@ -177,16 +182,14 @@ static void parseManualTransform(const std::string& manualTransform, double& S, 
     R = rotateMat; // Assign Rotation
 }
 
+} // namespace
 
 int aliceVision_main(int argc, char **argv)
 {
   // command-line parameters
-
-  std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
   std::string sfmDataFilename;
   std::string outSfMDataFilename;
   EAlignmentMethod alignmentMethod = EAlignmentMethod::AUTO_FROM_CAMERAS;
-
 
   // user optional parameters
   std::string transform;
@@ -199,8 +202,6 @@ int aliceVision_main(int argc, char **argv)
   std::string outputViewsAndPosesFilepath;
 
   std::string manualTransform;
-
-  po::options_description allParams("AliceVision sfmTransform");
 
   po::options_description requiredParams("Required parameters");
   requiredParams.add_options()
@@ -216,6 +217,7 @@ int aliceVision_main(int argc, char **argv)
         "\t- transformation: Apply a given transformation\n"
         "\t- manual: Apply the gizmo transformation\n"
         "\t- auto_from_cameras: Use cameras\n"
+        "\t- auto_from_cameras_x_axis: Use cameras X axis\n"
         "\t- auto_from_landmarks: Use landmarks\n"
         "\t- from_single_camera: Use camera specified by --tranformation\n"
         "\t- from_markers: Use markers specified by --markers\n"
@@ -245,43 +247,13 @@ int aliceVision_main(int argc, char **argv)
       "Path of the output SfMData file.")
     ;
 
-  po::options_description logParams("Log parameters");
-  logParams.add_options()
-    ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-      "verbosity level (fatal,  error, warning, info, debug, trace).");
-
-  allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-  po::variables_map vm;
-  try
+  CmdLine cmdline("AliceVision sfmTransform");
+  cmdline.add(requiredParams);
+  cmdline.add(optionalParams);
+  if (!cmdline.execute(argc, argv))
   {
-    po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-    if(vm.count("help") || (argc == 1))
-    {
-      ALICEVISION_COUT(allParams);
-      return EXIT_SUCCESS;
-    }
-    po::notify(vm);
+      return EXIT_FAILURE;
   }
-  catch(boost::program_options::required_option& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-  catch(boost::program_options::error& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-
-  ALICEVISION_COUT("Program called with the following parameters:");
-  ALICEVISION_COUT(vm);
-
-  // set verbose level
-  system::Logger::get()->setLogLevel(verboseLevel);
 
   if (alignmentMethod == EAlignmentMethod::FROM_MARKERS && markers.empty())
   {
@@ -332,6 +304,10 @@ int aliceVision_main(int argc, char **argv)
     case EAlignmentMethod::AUTO_FROM_CAMERAS:
       sfm::computeNewCoordinateSystemFromCameras(sfmData, S, R, t);
     break;
+
+    case EAlignmentMethod::AUTO_FROM_CAMERAS_X_AXIS:
+        sfm::computeNewCoordinateSystemFromCamerasXAxis(sfmData, S, R, t);
+        break;
 
     case EAlignmentMethod::AUTO_FROM_LANDMARKS:
       sfm::computeNewCoordinateSystemFromLandmarks(sfmData, feature::EImageDescriberType_stringToEnums(landmarksDescriberTypesName), S, R, t);
@@ -411,24 +387,32 @@ int aliceVision_main(int argc, char **argv)
       }
   }
 
-  // apply user scale
-  S *= userScale;
-  t *= userScale;
-
-  if (!applyScale)
+  if(!applyRotation)
   {
-      if (applyTranslation)
-          t = t / S;
-      S = 1;
-  }
-  if (!applyRotation)
-  {
-      if (applyTranslation)
-          t = R.inverse() * t;
+      // remove rotation from translation
+      t = R.transpose() * t;
+      // remove rotation
       R = Mat3::Identity();
+  }
+  if(applyScale)
+  {
+      // apply user scale
+      S *= userScale;
+      t *= userScale;
+  }
+  else
+  {
+      // remove scale from translation
+      if(std::abs(S) > 0.00001)
+      {
+          t /= S;
+      }
+      // reset scale to 1
+      S = 1.0;
   }
   if (!applyTranslation)
   {
+      // remove translation
       t = Vec3::Zero();
   }
 

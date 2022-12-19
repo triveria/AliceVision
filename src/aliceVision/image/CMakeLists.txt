@@ -4,10 +4,13 @@ add_definitions(-DTHIS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 set(image_files_headers
   all.hpp
   Image.hpp
+  imageAlgo.hpp
+  colorspace.hpp
   concat.hpp
   convertion.hpp
   convolutionBase.hpp
   convolution.hpp
+  dcp.hpp
   diffusion.hpp
   drawing.hpp
   filtering.hpp
@@ -15,15 +18,19 @@ set(image_files_headers
   resampling.hpp
   warping.hpp
   pixelTypes.hpp
+  Rgb.hpp
   Sampler.hpp
   cache.hpp
 )
 
 # Sources
 set(image_files_sources
+  colorspace.cpp
   convolution.cpp
+  dcp.cpp
   filtering.cpp
   io.cpp
+  imageAlgo.cpp
   cache.cpp
 )
 
@@ -42,7 +49,7 @@ alicevision_add_library(aliceVision_image
 )
 
 # Install config.ocio
-install(FILES config.ocio DESTINATION ${CMAKE_INSTALL_DATADIR}/aliceVision)
+install(FILES ./share/aliceVision/config.ocio DESTINATION ${CMAKE_INSTALL_DATADIR}/aliceVision)
 
 # Unit tests
 alicevision_add_test(image_test.cpp      NAME "image"            LINKS aliceVision_image)

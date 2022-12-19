@@ -31,32 +31,6 @@ using namespace aliceVision;
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 
-
-bool tryLoadMask(image::Image<unsigned char>* mask, const std::vector<std::string>& masksFolders, const IndexT viewId, const std::string& srcImage)
-{
-    for (const auto& masksFolder_str : masksFolders)
-    {
-        if (!masksFolder_str.empty() && fs::exists(masksFolder_str))
-        {
-            const auto masksFolder = fs::path(masksFolder_str);
-            const auto idMaskPath = masksFolder / fs::path(std::to_string(viewId)).replace_extension("png");
-            const auto nameMaskPath = masksFolder / fs::path(srcImage).filename().replace_extension("png");
-
-            if (fs::exists(idMaskPath))
-            {
-                image::readImage(idMaskPath.string(), *mask, image::EImageColorSpace::LINEAR);
-                return true;
-            }
-            else if (fs::exists(nameMaskPath))
-            {
-                image::readImage(nameMaskPath.string(), *mask, image::EImageColorSpace::LINEAR);
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 /**
  * @brief Basic cache system to manage masks.
  * 
@@ -533,15 +507,12 @@ int main(int argc, char **argv)
     std::string inputMeshPath;
     std::vector<std::string> masksFolders;
     std::string outputMeshPath;
-    std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
 
     int threshold = 1;
     bool invert = false;
     bool smoothBoundary = false;
     bool undistortMasks = false;
     bool usePointsVisibilities = false;
-
-    po::options_description allParams("AliceVision masking");
 
     po::options_description requiredParams("Required parameters");
     requiredParams.add_options()
@@ -570,43 +541,13 @@ int main(int argc, char **argv)
             "Use the points visibilities from the meshing to filter triangles. Example: when they are occluded, back-face, etc.")
         ;
 
-    po::options_description logParams("Log parameters");
-    logParams.add_options()
-        ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-            "verbosity level (fatal, error, warning, info, debug, trace).");
-
-    allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-    po::variables_map vm;
-    try
+    CmdLine cmdline("AliceVision meshMasking");
+    cmdline.add(requiredParams);
+    cmdline.add(optionalParams);
+    if (!cmdline.execute(argc, argv))
     {
-        po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-        if(vm.count("help") || (argc == 1))
-        {
-            ALICEVISION_COUT(allParams);
-            return EXIT_SUCCESS;
-        }
-        po::notify(vm);
-    }
-    catch(boost::program_options::required_option& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
         return EXIT_FAILURE;
     }
-    catch(boost::program_options::error& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
-        return EXIT_FAILURE;
-    }
-
-    ALICEVISION_COUT("Program called with the following parameters:");
-    ALICEVISION_COUT(vm);
-
-    // set verbose level
-    system::Logger::get()->setLogLevel(verboseLevel);
 
     // check user choose at least one input option
     if(sfmFilePath.empty())

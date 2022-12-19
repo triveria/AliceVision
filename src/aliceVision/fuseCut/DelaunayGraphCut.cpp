@@ -17,8 +17,9 @@
 #include <aliceVision/mvsData/Point2d.hpp>
 #include <aliceVision/mvsData/Universe.hpp>
 #include <aliceVision/mvsUtils/fileIO.hpp>
-#include <aliceVision/mvsData/imageIO.hpp>
-#include <aliceVision/mvsData/imageAlgo.hpp>
+#include <aliceVision/image/io.hpp>
+#include <aliceVision/image/imageAlgo.hpp>
+#include <aliceVision/system/ProgressDisplay.hpp>
 #include <aliceVision/alicevision_omp.hpp>
 
 #include "nanoflann.hpp"
@@ -28,13 +29,14 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/operations.hpp>
 
+#include <cmath>
 #include <random>
 #include <stdexcept>
 
 #include <boost/math/constants/constants.hpp>
 #include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics.hpp>
-#include <boost/progress.hpp>
+#include <boost/atomic/atomic_ref.hpp>
 
 namespace aliceVision {
 namespace fuseCut {
@@ -293,13 +295,12 @@ void createVerticesWithVisibilities(const StaticVector<int>& cams, std::vector<P
     for(int c = 0; c < cams.size(); ++c)
     {
         ALICEVISION_LOG_INFO("Create visibilities (" << c << "/" << cams.size() << ")");
-        std::vector<float> depthMap;
-        std::vector<float> simMap;
-        int width, height;
+        image::Image<float> depthMap;
+        image::Image<float> simMap;
         {
             const std::string depthMapFilepath = getFileNameFromIndex(mp, c, mvsUtils::EFileType::depthMap, 0);
-            imageIO::readImage(depthMapFilepath, width, height, depthMap, imageIO::EImageColorSpace::NO_CONVERSION);
-            if(depthMap.empty())
+            image::readImage(depthMapFilepath, depthMap, image::EImageColorSpace::NO_CONVERSION);
+            if (depthMap.size() == 0)
             {
                 ALICEVISION_LOG_WARNING("Empty depth map: " << depthMapFilepath);
                 continue;
@@ -310,32 +311,32 @@ void createVerticesWithVisibilities(const StaticVector<int>& cams, std::vector<P
             // else init with a constant value.
             if(boost::filesystem::exists(simMapFilepath))
             {
-                imageIO::readImage(simMapFilepath, wTmp, hTmp, simMap, imageIO::EImageColorSpace::NO_CONVERSION);
-                if(wTmp != width || hTmp != height)
+                image::readImage(simMapFilepath, simMap, image::EImageColorSpace::NO_CONVERSION);
+                if (simMap.Width() != depthMap.Width() || simMap.Height() != depthMap.Height())
                     throw std::runtime_error("Similarity map size doesn't match the depth map size: " + simMapFilepath +
                                              ", " + depthMapFilepath);
                 {
-                    std::vector<float> simMapTmp(simMap.size());
-                    imageAlgo::convolveImage(width, height, simMap, simMapTmp, "gaussian", simGaussianSize,
-                                             simGaussianSize);
+                    image::Image<float> simMapTmp;
+                    imageAlgo::convolveImage(simMap, simMapTmp,
+                                             "gaussian", simGaussianSize, simGaussianSize);
                     simMap.swap(simMapTmp);
                 }
             }
             else
             {
                 ALICEVISION_LOG_WARNING("simMap file can't be found.");
-                simMap.resize(width * height, -1);
+                simMap.resize(depthMap.Width(), depthMap.Height(), true, -1);
             }
 
         }
         // Add visibility
         #pragma omp parallel for
-        for(int y = 0; y < height; ++y)
+        for (int y = 0; y < depthMap.Height(); ++y)
         {
-            for(int x = 0; x < width; ++x)
+            for(int x = 0; x < depthMap.Width(); ++x)
             {
-                const std::size_t index = y * width + x;
-                const float depth = depthMap[index];
+                const std::size_t index = y * depthMap.Width() + x;
+                const float depth = depthMap(index);
                 if(depth <= 0.0f)
                     continue;
 
@@ -364,7 +365,7 @@ void createVerticesWithVisibilities(const StaticVector<int>& cams, std::vector<P
                 {
                     GC_vertexInfo& va = verticesAttrPrepare[nearestVertexIndex];
                     Point3d& vc = verticesCoordsPrepare[nearestVertexIndex];
-                    const float simValue = simMap[index];
+                    const float simValue = simMap(index);
                     // remap similarity values from [-1;+1] to [+1;+simFactor]
                     // interpretation is [goodSimilarity;badSimilarity]
                     const float simScore = simValue < -1.0f ? 1.0f : 1.0f + (1.0f + simValue) * simFactor;
@@ -682,11 +683,8 @@ StaticVector<int> DelaunayGraphCut::getIsUsedPerCamera() const
         for(int c = 0; c < v.cams.size(); ++c)
         {
             const int obsCam = v.cams[c];
-
-//#pragma OMP_ATOMIC_WRITE
-            {
-                cams[obsCam] = 1;
-            }
+            // boost::atomic_ref<int>(cams[obsCam]) = 1;
+            cams[obsCam] = 1;
         }
     }
 
@@ -947,20 +945,21 @@ void DelaunayGraphCut::addMaskHelperPoints(const Point3d voxel[8], const StaticV
     {
         for(int c = 0; c < cams.size(); c++)
         {
-            std::vector<float> depthMap;
-            int width, height;
+            image::Image<float> depthMap;
             {
                 const std::string depthMapFilepath = getFileNameFromIndex(_mp, c, mvsUtils::EFileType::depthMap, 0);
-                imageIO::readImage(depthMapFilepath, width, height, depthMap, imageIO::EImageColorSpace::NO_CONVERSION);
-                if(depthMap.empty())
+                image::readImage(depthMapFilepath, depthMap, image::EImageColorSpace::NO_CONVERSION);
+                if(depthMap.size() == 0)
                 {
                     ALICEVISION_LOG_WARNING("Empty depth map: " << depthMapFilepath);
                     continue;
                 }
             }
 
-            int syMax = std::ceil(height / step);
-            int sxMax = std::ceil(width / step);
+            const int width = depthMap.Width();
+            const int height = depthMap.Height();
+            int syMax = divideRoundUp(height, step);
+            int sxMax = divideRoundUp(width, step);
 
             for(int sy = 0; sy < syMax; ++sy)
             {
@@ -975,7 +974,7 @@ void DelaunayGraphCut::addMaskHelperPoints(const Point3d voxel[8], const StaticV
                         for(int x = sx * step, xmax = std::min((sx + 1) * step, width); x < xmax; ++x)
                         {
                             const std::size_t index = y * width + x;
-                            const float depth = depthMap[index];
+                            const float depth = depthMap(index);
                             
                             // -2 means that the pixels should be masked-out with mask helper points
                             if(depth > -1.5f)
@@ -989,7 +988,7 @@ void DelaunayGraphCut::addMaskHelperPoints(const Point3d voxel[8], const StaticV
                                 for(int lx = std::max(x - kernelSize, 0), lxMax = std::min(x + kernelSize, width - 1);
                                     lx < lxMax; ++lx)
                                 {
-                                    if(depthMap[ly * width + lx] > 0.0f)
+                                    if (depthMap(ly * width + lx) > 0.0f)
                                         ++nbValidDepth;
                                 }
                             }
@@ -1050,7 +1049,7 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
     // and iterate to fuse points until we get the right amount of points.
 
     // unsigned long nbValidDepths = computeNumberOfAllPoints(mp, 0);
-    // int stepPts = std::ceil((double)nbValidDepths / (double)maxPoints);
+    // int stepPts = divideRoundUp(nbValidDepths, maxPoints);
     std::size_t nbPixels = 0;
     for(const auto& imgParams: _mp.getImagesParams())
     {
@@ -1064,7 +1063,8 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
     {
         const auto& imgParams = _mp.getImageParams(i);
         startIndex[i] = realMaxVertices;
-        realMaxVertices += std::ceil(imgParams.width / step) * std::ceil(imgParams.height / step);
+        realMaxVertices += divideRoundUp(imgParams.width, step) *
+                           divideRoundUp(imgParams.height, step);
     }
     std::vector<Point3d> verticesCoordsPrepare(realMaxVertices);
     std::vector<double> pixSizePrepare(realMaxVertices);
@@ -1086,37 +1086,42 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
         #pragma omp parallel for num_threads(3)
         for(int c = 0; c < cams.size(); c++)
         {
-            std::vector<float> depthMap;
-            std::vector<float> simMap;
-            std::vector<unsigned char> numOfModalsMap;
+            image::Image<float> depthMap;
+            image::Image<float> simMap;
+            image::Image<unsigned char> numOfModalsMap;
             int width, height;
             {
                 const std::string depthMapFilepath = getFileNameFromIndex(_mp, c, mvsUtils::EFileType::depthMap, 0);
-                imageIO::readImage(depthMapFilepath, width, height, depthMap, imageIO::EImageColorSpace::NO_CONVERSION);
-                if(depthMap.empty())
+                image::readImage(depthMapFilepath, depthMap, image::EImageColorSpace::NO_CONVERSION);
+                if (depthMap.size() == 0)
                 {
                     ALICEVISION_LOG_WARNING("Empty depth map: " << depthMapFilepath);
                     continue;
                 }
+                width = depthMap.Width();
+                height = depthMap.Height();
+
                 int wTmp, hTmp;
                 const std::string simMapFilepath = getFileNameFromIndex(_mp, c, mvsUtils::EFileType::simMap, 0);
                 // If we have a simMap in input use it,
                 // else init with a constant value.
                 if(boost::filesystem::exists(simMapFilepath))
                 {
-                    imageIO::readImage(simMapFilepath, wTmp, hTmp, simMap, imageIO::EImageColorSpace::NO_CONVERSION);
-                    if(wTmp != width || hTmp != height)
+                    image::readImage(simMapFilepath, simMap, image::EImageColorSpace::NO_CONVERSION);
+                    if (simMap.Width() != width || simMap.Height() != height)
                         throw std::runtime_error("Wrong sim map dimensions: " + simMapFilepath);
                     {
-                        std::vector<float> simMapTmp(simMap.size());
-                        imageAlgo::convolveImage(width, height, simMap, simMapTmp, "gaussian",
-                    params.simGaussianSizeInit, params.simGaussianSizeInit); simMap.swap(simMapTmp);
+                        image::Image<float> simMapTmp;
+                        imageAlgo::convolveImage(simMap, simMapTmp, "gaussian",
+                                                 params.simGaussianSizeInit,
+                                                 params.simGaussianSizeInit);
+                        simMap.swap(simMapTmp);
                     }
                 }
                 else
                 {
                     ALICEVISION_LOG_WARNING("simMap file can't be found.");
-                    simMap.resize(width * height, -1);
+                    simMap.resize(width, height, true, -1);
                 }
 
                 const std::string nmodMapFilepath = getFileNameFromIndex(_mp, c, mvsUtils::EFileType::nmodMap, 0);
@@ -1124,20 +1129,20 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
                 // else init with a constant value.
                 if(boost::filesystem::exists(nmodMapFilepath))
                 {
-                    imageIO::readImage(nmodMapFilepath, wTmp, hTmp, numOfModalsMap,
-                                       imageIO::EImageColorSpace::NO_CONVERSION);
-                    if(wTmp != width || hTmp != height)
+                    image::readImage(nmodMapFilepath, numOfModalsMap,
+                                     image::EImageColorSpace::NO_CONVERSION);
+                    if (numOfModalsMap.Width() != width || numOfModalsMap.Height() != height)
                         throw std::runtime_error("Wrong nmod map dimensions: " + nmodMapFilepath);
                 }
                 else
                 {
                     ALICEVISION_LOG_WARNING("nModMap file can't be found.");
-                    numOfModalsMap.resize(width*height, 1);
+                    numOfModalsMap.resize(width, height, true, 1);
                 }
             }
 
-            int syMax = std::ceil(height/step);
-            int sxMax = std::ceil(width/step);
+            int syMax = divideRoundUp(height, step);
+            int sxMax = divideRoundUp(width, step);
             #pragma omp parallel for
             for(int sy = 0; sy < syMax; ++sy)
             {
@@ -1156,7 +1161,7 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
                             x < xmax; ++x)
                         {
                             const std::size_t index = y * width + x;
-                            const float depth = depthMap[index];
+                            const float depth = depthMap(index);
                             if(depth <= 0.0f)
                                 continue;
 
@@ -1166,13 +1171,13 @@ void DelaunayGraphCut::fuseFromDepthMaps(const StaticVector<int>& cams, const Po
                             {
                                 for(int lx = std::max(x-scoreKernelSize, 0), lxMax = std::min(x+scoreKernelSize, width-1); lx < lxMax; ++lx)
                                 {
-                                    if(depthMap[ly * width + lx] > 0.0f)
+                                    if (depthMap(ly * width + lx) > 0.0f)
                                     {
-                                        numOfModals += 10 + int(numOfModalsMap[ly * width + lx]);
+                                        numOfModals += 10 + int(numOfModalsMap(ly * width + lx));
                                     }
                                 }
                             }
-                            float sim = simMap[index];
+                            float sim = simMap(index);
                             sim = sim < 0.0f ?  0.0f : sim; // clamp values < 0
                             // remap similarity values from [-1;+1] to [+1;+simScale]
                             // interpretation is [goodSimilarity;badSimilarity]
@@ -1623,13 +1628,13 @@ DelaunayGraphCut::GeometryIntersection DelaunayGraphCut::rayIntersectTriangle(co
     const double BCSize = (*B - *C).size();
     const double ACSize = (*A - *C).size();
 
-    const double marginEpsilon = std::min(std::min(ABSize, BCSize), ACSize) * epsilonFactor;
+    const double marginEpsilon = std::min({ABSize, BCSize, ACSize}) * epsilonFactor;
     const double ambiguityEpsilon = (ABSize + BCSize + ACSize) / 3.0 * 1.0e-2;
 
     Point3d tempIntersectPt;
     const Point2d triangleUv = getLineTriangleIntersectBarycCoords(&tempIntersectPt, A, B, C, &originPt, &DirVec);
 
-    if (!isnormal(tempIntersectPt.x) || !isnormal(tempIntersectPt.y) || !isnormal(tempIntersectPt.z))
+    if (!std::isnormal(tempIntersectPt.x) || !std::isnormal(tempIntersectPt.y) || !std::isnormal(tempIntersectPt.z))
     {
         // This is not suppose to happen in real life, we log a warning instead of raising an exeption if we face a border case
         // ALICEVISION_LOG_WARNING("Invalid/notNormal intersection point found during rayIntersectTriangle.");
@@ -1874,7 +1879,10 @@ void DelaunayGraphCut::fillGraph(double nPixelSizeBehind, bool labatutWeights, b
     GeometriesCount totalGeometriesIntersectedFrontCount;
     GeometriesCount totalGeometriesIntersectedBehindCount;
 
-    boost::progress_display progressBar(std::min(size_t(100), verticesRandIds.size()), std::cout, "fillGraphPartPtRc\n");
+    auto progressDisplay =
+            system::createConsoleProgressDisplay(std::min(size_t(100), verticesRandIds.size()),
+                                                 std::cout, "fillGraphPartPtRc\n");
+
     size_t progressStep = verticesRandIds.size() / 100;
     progressStep = std::max(size_t(1), progressStep);
 #pragma omp parallel for reduction(+:totalStepsFront,totalRayFront,totalStepsBehind,totalRayBehind,totalCamHaveVisibilityOnVertex,totalOfVertex,totalIsRealNrc)
@@ -1882,12 +1890,14 @@ void DelaunayGraphCut::fillGraph(double nPixelSizeBehind, bool labatutWeights, b
     {
         if(i % progressStep == 0)
         {
-#pragma omp critical
-            ++progressBar;
+            ++progressDisplay;
         }
 
         const int vertexIndex = verticesRandIds[i];
         const GC_vertexInfo& v = _verticesAttr[vertexIndex];
+
+        GeometriesCount subTotalGeometriesIntersectedFrontCount;
+        GeometriesCount subTotalGeometriesIntersectedBehindCount;
 
         if(v.isReal())
         {
@@ -1914,22 +1924,25 @@ void DelaunayGraphCut::fillGraph(double nPixelSizeBehind, bool labatutWeights, b
                 totalStepsBehind += stepsBehind;
                 totalRayBehind += 1;
 
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.facets += geometriesIntersectedFrontCount.facets;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.vertices += geometriesIntersectedFrontCount.vertices;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.edges += geometriesIntersectedFrontCount.edges;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.facets += geometriesIntersectedBehindCount.facets;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.vertices += geometriesIntersectedBehindCount.vertices;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.edges += geometriesIntersectedBehindCount.edges;
+                subTotalGeometriesIntersectedFrontCount += geometriesIntersectedFrontCount;
+                subTotalGeometriesIntersectedBehindCount += geometriesIntersectedBehindCount;
             } // for c
 
             totalCamHaveVisibilityOnVertex += v.cams.size();
             totalOfVertex += 1;
+
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.facets} +=
+                    subTotalGeometriesIntersectedFrontCount.facets;
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.vertices} +=
+                    subTotalGeometriesIntersectedFrontCount.vertices;
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.edges} +=
+                    subTotalGeometriesIntersectedFrontCount.edges;
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.facets} +=
+                    subTotalGeometriesIntersectedBehindCount.facets;
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.vertices} +=
+                    subTotalGeometriesIntersectedBehindCount.vertices;
+            boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.edges} +=
+                    subTotalGeometriesIntersectedBehindCount.edges;
         }
     }
 
@@ -2029,15 +2042,11 @@ void DelaunayGraphCut::fillGraphPartPtRc(
             if (geometry.type == EGeometryType::Facet)
             {
                 ++outFrontCount.facets;
-                {
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[geometry.facet.cellIndex].emptinessScore += weight;
-                }
+                boost::atomic_ref<float>{_cellsAttr[geometry.facet.cellIndex].emptinessScore} += weight;
 
                 {
                     const float dist = distFcn(maxDist, (originPt - lastIntersectPt).size(), distFcnHeight);
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[geometry.facet.cellIndex].gEdgeVisWeight[geometry.facet.localVertexIndex] += weight * dist;
+                    boost::atomic_ref<float>{_cellsAttr[geometry.facet.cellIndex].gEdgeVisWeight[geometry.facet.localVertexIndex]} += weight * dist;
                 }
 
                 // Take the mirror facet to iterate over the next cell
@@ -2064,8 +2073,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
                 // These geometries do not have a cellIndex, so we use the previousGeometry to retrieve the cell between the previous geometry and the current one.
                 if (previousGeometry.type == EGeometryType::Facet)
                 {
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[previousGeometry.facet.cellIndex].emptinessScore += weight;
+                    boost::atomic_ref<float>{_cellsAttr[previousGeometry.facet.cellIndex].emptinessScore} += weight;
                 }
 
                 if (geometry.type == EGeometryType::Vertex)
@@ -2093,8 +2101,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
             if (lastIntersectedFacet.cellIndex != GEO::NO_CELL &&
                 (_mp.CArr[cam] - intersectPt).size() < 0.2 * pointCamDistance)
             {
-    #pragma OMP_ATOMIC_WRITE
-                _cellsAttr[lastIntersectedFacet.cellIndex].cellSWeight = (float)maxint;
+                boost::atomic_ref<float>{_cellsAttr[lastIntersectedFacet.cellIndex].cellSWeight} = (float)maxint;
             }
         }
 
@@ -2106,8 +2113,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
                 // lastGeoIsVertex is supposed to be positive in almost all cases.
                 // If we do not reach the camera, we still vote on the last tetrehedra.
                 // Possible reaisons: the camera is not part of the vertices or we encounter a numerical error in intersectNextGeom
-#pragma OMP_ATOMIC_WRITE
-                _cellsAttr[lastIntersectedFacet.cellIndex].cellSWeight = (float)maxint;
+                boost::atomic_ref<float>{_cellsAttr[lastIntersectedFacet.cellIndex].cellSWeight} = (float)maxint;
             }
             // else
             // {
@@ -2180,15 +2186,11 @@ void DelaunayGraphCut::fillGraphPartPtRc(
                 // Vote for the first cell found (only once)
                 if (firstIteration)
                 {
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[geometry.facet.cellIndex].on += fWeight;
+                    boost::atomic_ref<float>{_cellsAttr[geometry.facet.cellIndex].on} += fWeight;
                     firstIteration = false;
                 }
 
-                {
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[geometry.facet.cellIndex].fullnessScore += fWeight;
-                }
+                boost::atomic_ref<float>{_cellsAttr[geometry.facet.cellIndex].fullnessScore} += fWeight;
 
                 // Take the mirror facet to iterate over the next cell
                 const Facet mFacet = mirrorFacet(geometry.facet);
@@ -2202,8 +2204,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
 
                 {
                     const float dist = distFcn(maxDist, (originPt - lastIntersectPt).size(), distFcnHeight);
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[geometry.facet.cellIndex].gEdgeVisWeight[geometry.facet.localVertexIndex] +=
+                    boost::atomic_ref<float>{_cellsAttr[geometry.facet.cellIndex].gEdgeVisWeight[geometry.facet.localVertexIndex]} +=
                         fWeight * dist;
                 }
                 if(previousGeometry.type == EGeometryType::Facet && outBehindCount.facets > 1000)
@@ -2232,8 +2233,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
 
                     for (const CellIndex& ci : neighboringCells)
                     {
-#pragma OMP_ATOMIC_UPDATE
-                        _cellsAttr[neighboringCells[0]].on += fWeight;
+                        boost::atomic_ref<float>{_cellsAttr[neighboringCells[0]].on} += fWeight;
                     }
                     firstIteration = false;
                 }
@@ -2242,8 +2242,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
                 // These geometries do not have a cellIndex, so we use the previousGeometry to retrieve the cell between the previous geometry and the current one.
                 if (previousGeometry.type == EGeometryType::Facet)
                 {
-#pragma OMP_ATOMIC_UPDATE
-                    _cellsAttr[previousGeometry.facet.cellIndex].fullnessScore += fWeight;
+                    boost::atomic_ref<float>{_cellsAttr[previousGeometry.facet.cellIndex].fullnessScore} += fWeight;
                 }
 
                 if (geometry.type == EGeometryType::Vertex)
@@ -2271,8 +2270,7 @@ void DelaunayGraphCut::fillGraphPartPtRc(
         // Vote for the last intersected facet (farthest from the camera)
         if (lastIntersectedFacet.cellIndex != GEO::NO_CELL)
         {
-#pragma OMP_ATOMIC_UPDATE
-            _cellsAttr[lastIntersectedFacet.cellIndex].cellTWeight += fWeight;
+            boost::atomic_ref<float>{_cellsAttr[lastIntersectedFacet.cellIndex].cellTWeight} += fWeight;
         }
     }
 }
@@ -2457,12 +2455,12 @@ void DelaunayGraphCut::forceTedgesByGradientIJCV(float nPixelSizeBehind)
                     }
                 }
                 ++totalRayFront;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.facets += geometriesIntersectedFrontCount.facets;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.vertices += geometriesIntersectedFrontCount.vertices;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedFrontCount.edges += geometriesIntersectedFrontCount.edges;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.facets} +=
+                        geometriesIntersectedFrontCount.facets;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.vertices} +=
+                        geometriesIntersectedFrontCount.vertices;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedFrontCount.edges} +=
+                        geometriesIntersectedFrontCount.edges;
             }
             {
                 // Initialisation
@@ -2610,17 +2608,13 @@ void DelaunayGraphCut::forceTedgesByGradientIJCV(float nPixelSizeBehind)
                        (maxSilent < maxSilentPartRange)) // g < k_outl                  //// k_outl=100  // 400 in the paper
                         //(maxSilent-minSilent<maxSilentPartRange))
                     {
-#pragma OMP_ATOMIC_UPDATE
-                        _cellsAttr[lastIntersectedFacet.cellIndex].on += (maxJump - midSilent);
+                        boost::atomic_ref<float>{_cellsAttr[lastIntersectedFacet.cellIndex].on} += (maxJump - midSilent);
                     }
                 }
                 ++totalRayBehind;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.facets += totalGeometriesIntersectedBehindCount.facets;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.vertices += totalGeometriesIntersectedBehindCount.vertices;
-#pragma OMP_ATOMIC_UPDATE
-                totalGeometriesIntersectedBehindCount.edges += totalGeometriesIntersectedBehindCount.edges;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.facets} += totalGeometriesIntersectedBehindCount.facets;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.vertices} += totalGeometriesIntersectedBehindCount.vertices;
+                boost::atomic_ref<std::size_t>{totalGeometriesIntersectedBehindCount.edges} += totalGeometriesIntersectedBehindCount.edges;
             }
         }
         totalCamHaveVisibilityOnVertex += v.cams.size();
@@ -2925,7 +2919,7 @@ void DelaunayGraphCut::cellsStatusFilteringBySolidAngleRatio(int nbSolidAngleFil
     // using solid angle ratio between full/empty parts.
     for(int i = 0; i < nbSolidAngleFilteringIterations; ++i)
     {
-        std::vector<bool> cellsInvertStatus(_cellIsFull.size(), false);
+        std::vector<std::uint8_t> cellsInvertStatus(_cellIsFull.size(), false);
         int toInvertCount = 0;
 
         std::vector<bool> vertexIsOnSurface;
@@ -3022,8 +3016,7 @@ void DelaunayGraphCut::cellsStatusFilteringBySolidAngleRatio(int nbSolidAngleFil
             {
                 if(_cellIsFull[ci] == invertFull)
                 {
-#pragma OMP_ATOMIC_WRITE
-                    cellsInvertStatus[ci] = true;
+                    boost::atomic_ref<std::uint8_t>{cellsInvertStatus[ci]} = true;
                     ++toInvertCount;
                 }
             }

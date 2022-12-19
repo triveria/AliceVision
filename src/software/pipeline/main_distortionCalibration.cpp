@@ -163,7 +163,8 @@ bool retrieveLines(std::vector<calibration::LineWithPoints> & lineWithPoints, co
     {
         image::Image<image::RGBColor> drawing = input;
         detect.drawCheckerBoard(drawing);
-        image::writeImage(checkerImagePath, drawing, image::EImageColorSpace::NO_CONVERSION);
+        image::writeImage(checkerImagePath, drawing,
+                          image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
     }
 
     lineWithPoints.clear();
@@ -470,12 +471,6 @@ int aliceVision_main(int argc, char* argv[])
     std::string sfmInputDataFilepath;
     std::vector<std::string> lensGridFilepaths;
     std::string sfmOutputDataFilepath;
-    std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
-
-    // Command line parameters
-    po::options_description allParams(
-    "Parse external information about cameras used in a panorama.\n"
-    "AliceVision PanoramaInit");
 
     po::options_description requiredParams("Required parameters");
     requiredParams.add_options()
@@ -484,43 +479,13 @@ int aliceVision_main(int argc, char* argv[])
     ("outSfMData,o", po::value<std::string>(&sfmOutputDataFilepath)->required(), "SfMData file output.")
     ;
 
-    po::options_description logParams("Log parameters");
-    logParams.add_options()
-    ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-        "verbosity level (fatal, error, warning, info, debug, trace).");
-
-    allParams.add(requiredParams).add(logParams);
-
-    // Parse command line
-    po::variables_map vm;
-    try
+    CmdLine cmdline("This program calibrates camera distortion.\n"
+                    "AliceVision distortionCalibration");
+    cmdline.add(requiredParams);
+    if (!cmdline.execute(argc, argv))
     {
-        po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-        if(vm.count("help") || (argc == 1))
-        {
-            ALICEVISION_COUT(allParams);
-            return EXIT_SUCCESS;
-        }
-        po::notify(vm);
-    }
-    catch(boost::program_options::required_option& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
         return EXIT_FAILURE;
     }
-    catch(boost::program_options::error& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
-        return EXIT_FAILURE;
-    }
-
-    ALICEVISION_COUT("Program called with the following parameters:");
-    ALICEVISION_COUT(vm);
-
-    system::Logger::get()->setLogLevel(verboseLevel);
 
     sfmData::SfMData sfmData;
     if(!sfmDataIO::Load(sfmData, sfmInputDataFilepath, sfmDataIO::ESfMData(sfmDataIO::ALL)))
@@ -621,7 +586,7 @@ int aliceVision_main(int argc, char* argv[])
             }
 
             fs::copy_file(lensGridFilepath, fs::path(outputPath) / fs::path(lensGridFilepath).filename(),
-                          fs::copy_option::overwrite_if_exists);
+                          fs::copy_options::overwrite_existing);
 
             const std::string checkerImagePath =
                 (fs::path(outputPath) / fs::path(lensGridFilepath).stem()).string() + "_checkerboard.exr";
@@ -761,10 +726,11 @@ int aliceVision_main(int argc, char* argv[])
 
             Vec2 offset;
             image::Image<image::RGBColor> ud = undistort(offset, cameraPinhole, input);
-            image::writeImage(undistortedImagePath, ud, image::EImageColorSpace::AUTO);
+            image::writeImage(undistortedImagePath, ud, image::ImageWriteOptions());
 
             image::Image<image::RGBfColor> stmap = undistortSTMAP(offset, cameraPinhole, input);
-            image::writeImage(stMapImagePath, stmap, image::EImageColorSpace::NO_CONVERSION);
+            image::writeImage(stMapImagePath, stmap,
+                              image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
         }
     }
 

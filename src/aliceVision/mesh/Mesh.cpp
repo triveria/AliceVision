@@ -13,6 +13,7 @@
 
 #include <geogram/points/kd_tree.h>
 
+#include <boost/atomic/atomic_ref.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string/case_conv.hpp> 
 
@@ -114,8 +115,8 @@ void Mesh::save(const std::string& filepath)
     for (const auto & p : pts)
     {
         aimesh->mVertices[index].x = p.x;
-        aimesh->mVertices[index].y = p.y;
-        aimesh->mVertices[index].z = p.z;
+        aimesh->mVertices[index].y = -p.y;
+        aimesh->mVertices[index].z = -p.z;
 
         ++index;
     }
@@ -1296,17 +1297,17 @@ Point3d Mesh::computeTriangleCenterOfGravity(int idTri) const
 double Mesh::computeTriangleMaxEdgeLength(int idTri) const
 {
     const Mesh::triangle& t = tris[idTri];
-    return std::max(std::max((pts[t.v[0]] - pts[t.v[1]]).size(),
-                             (pts[t.v[1]] - pts[t.v[2]]).size()),
-                             (pts[t.v[2]] - pts[t.v[0]]).size());
+    return std::max({(pts[t.v[0]] - pts[t.v[1]]).size(),
+                     (pts[t.v[1]] - pts[t.v[2]]).size(),
+                     (pts[t.v[2]] - pts[t.v[0]]).size()});
 }
 
 double Mesh::computeTriangleMinEdgeLength(int idTri) const
 {
     const Mesh::triangle& t = tris[idTri];
-    return std::min(std::min((pts[t.v[0]] - pts[t.v[1]]).size(),
-                             (pts[t.v[1]] - pts[t.v[2]]).size()),
-                             (pts[t.v[2]] - pts[t.v[0]]).size());
+    return std::min({(pts[t.v[0]] - pts[t.v[1]]).size(),
+                     (pts[t.v[1]] - pts[t.v[2]]).size(),
+                     (pts[t.v[2]] - pts[t.v[0]]).size()});
 }
 
 void Mesh::computeNormalsForPts(StaticVector<Point3d>& out_nms)
@@ -2455,7 +2456,7 @@ void Mesh::load(const std::string& filepath)
                 map_indices[idPoint] = pts.size();
 
                 const aiVector3D v = mesh->mVertices[idPoint];
-                pts.push_back(Point3d(v.x, v.y, v.z));
+                pts.push_back(Point3d(v.x, -v.y, -v.z));
 
                 if (mesh->HasVertexColors(0))
                 {
@@ -2475,7 +2476,7 @@ void Mesh::load(const std::string& filepath)
                 if (mesh->HasNormals())
                 {
                     const aiVector3D n = mesh->mNormals[idPoint];
-                    normals.push_back(Point3d(n.x, n.y, n.z));      
+                    normals.push_back(Point3d(n.x, -n.y, -n.z));      
                 }
             }
 
@@ -2651,14 +2652,12 @@ bool Mesh::lockSurfaceBoundaries(int neighbourIterations, StaticVectorBool& out_
 
             if(boundariesVertices[edge.first])
             {
-                #pragma OMP_ATOMIC_WRITE
-                boundariesVerticesCurrent[edge.second] = true;
+                boost::atomic_ref<char>{boundariesVerticesCurrent[edge.second]} = true;
             }
 
             if(boundariesVertices[edge.second])
             {
-                #pragma OMP_ATOMIC_WRITE
-                boundariesVerticesCurrent[edge.first] = true;
+                boost::atomic_ref<char>{boundariesVerticesCurrent[edge.first]} = true;
             }
         }
         std::swap(boundariesVertices, boundariesVerticesCurrent);
@@ -2778,8 +2777,7 @@ bool Mesh::getSurfaceBoundaries(StaticVectorBool& out_trisToConsider, bool inver
 
         if(boundariesEdges[i] == !invert)
         {
-            #pragma OMP_ATOMIC_WRITE
-            out_trisToConsider[edge.triId] = true;
+            boost::atomic_ref<char>{out_trisToConsider[edge.triId]} = true;
         }
     }
 

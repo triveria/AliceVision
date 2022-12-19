@@ -15,7 +15,7 @@
 
 // Image
 #include <aliceVision/image/all.hpp>
-#include <aliceVision/mvsData/imageAlgo.hpp>
+#include <aliceVision/image/imageAlgo.hpp>
 
 // System
 #include <aliceVision/system/MemoryInfo.hpp>
@@ -348,6 +348,12 @@ bool processImage(const PanoramaMap & panoramaMap, const std::string & composite
 
     bool hasFailed = false;
 
+    // Load metadata to get image color space
+    std::string colorSpace;
+    const std::string firstImagePath = (fs::path(warpingFolder) / (std::to_string(overlappingViews[0]) + ".exr")).string();
+    oiio::ParamValueList srcMetadata = image::readImageMetadata(firstImagePath);
+    colorSpace = srcMetadata.get_string("AliceVision:ColorSpace", "Linear");
+
     #pragma omp parallel for
     for (int posCurrent = 0; posCurrent < overlappingViews.size(); posCurrent++)
     {
@@ -533,13 +539,15 @@ bool processImage(const PanoramaMap & panoramaMap, const std::string & composite
     }
 
     oiio::ParamValueList metadata;
-    metadata.push_back(oiio::ParamValue("AliceVision:storageDataType", EStorageDataType_enumToString(storageDataType)));
     metadata.push_back(oiio::ParamValue("AliceVision:offsetX", int(referenceBoundingBox.left)));
     metadata.push_back(oiio::ParamValue("AliceVision:offsetY", int(referenceBoundingBox.top)));
     metadata.push_back(oiio::ParamValue("AliceVision:panoramaWidth", int(panoramaMap.getWidth())));
     metadata.push_back(oiio::ParamValue("AliceVision:panoramaHeight", int(panoramaMap.getHeight())));
+    metadata.push_back(oiio::ParamValue("AliceVision:ColorSpace", colorSpace));
 
-    image::writeImage(outputFilePath, output, image::EImageColorSpace::LINEAR, metadata);
+    image::writeImage(outputFilePath, output,
+                      image::ImageWriteOptions().toColorSpace(image::EImageColorSpace_stringToEnum(colorSpace))
+                                                .storageDataType(storageDataType), metadata);
 
     return true;
 }
@@ -560,20 +568,12 @@ int aliceVision_main(int argc, char** argv)
 
     image::EStorageDataType storageDataType = image::EStorageDataType::Float;
 
-    system::EVerboseLevel verboseLevel = system::Logger::getDefaultVerboseLevel();
-
-    // Program description
-    po::options_description allParams(
-        "Perform panorama stiching of cameras around a nodal point for 360° panorama creation. \n"
-        "AliceVision PanoramaCompositing");
-
     // Description of mandatory parameters
     po::options_description requiredParams("Required parameters");
     requiredParams.add_options()
         ("input,i", po::value<std::string>(&sfmDataFilepath)->required(), "Input sfmData.")
         ("warpingFolder,w", po::value<std::string>(&warpingFolder)->required(), "Folder with warped images.")
         ("output,o", po::value<std::string>(&outputFolder)->required(), "Path of the output panorama.");
-    allParams.add(requiredParams);
 
     // Description of optional parameters
     po::options_description optionalParams("Optional parameters");
@@ -585,45 +585,20 @@ int aliceVision_main(int argc, char** argv)
 		("rangeSize", po::value<int>(&rangeSize)->default_value(rangeSize), "Range size.")
         ("maxThreads", po::value<int>(&maxThreads)->default_value(maxThreads), "max number of threads to use.")
         ("labels,l", po::value<std::string>(&labelsFilepath)->required(), "Labels image from seams estimation.");
-    allParams.add(optionalParams);
 
-    // Setup log level given command line
-    po::options_description logParams("Log parameters");
-    logParams.add_options()
-        ("verboseLevel,v", po::value<system::EVerboseLevel>(&verboseLevel)->default_value(verboseLevel), "verbosity level (fatal, error, warning, info, debug, trace).");
-    allParams.add(logParams);
-
-    // Effectively parse command line given parse options
-    po::variables_map vm;
-    try
+    CmdLine cmdline("This program performs panorama stiching of cameras around a nodal point for 360° panorama creation. \n"
+                    "AliceVision panoramaCompositing");
+    cmdline.add(requiredParams);
+    cmdline.add(optionalParams);
+    if (!cmdline.execute(argc, argv))
     {
-        po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-        if(vm.count("help") || (argc == 1))
-        {
-            ALICEVISION_COUT(allParams);
-            return EXIT_SUCCESS;
-        }
-        po::notify(vm);
-    }
-    catch(boost::program_options::required_option& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
-        return EXIT_FAILURE;
-    }
-    catch(boost::program_options::error& e)
-    {
-        ALICEVISION_CERR("ERROR: " << e.what());
-        ALICEVISION_COUT("Usage:\n\n" << allParams);
         return EXIT_FAILURE;
     }
 
-    ALICEVISION_COUT("Program called with the following parameters:");
-    ALICEVISION_COUT(vm);
-
-    // Set verbose level given command line
-    system::Logger::get()->setLogLevel(verboseLevel);
+    // set maxThreads
+    HardwareContext hwc = cmdline.getHardwareContext();
+    hwc.setUserCoresLimit(maxThreads);
+    omp_set_num_threads(hwc.getMaxThreads());
 
     if (overlayType == "borders" || overlayType == "all")
     {
@@ -652,7 +627,7 @@ int aliceVision_main(int argc, char** argv)
             return EXIT_FAILURE;
         }
 
-        int countIterations = int(std::ceil(double(viewsCount) / double(rangeSize)));
+        int countIterations = divideRoundUp(viewsCount, rangeSize);
        
         if(rangeIteration >= countIterations)
         {
@@ -707,10 +682,6 @@ int aliceVision_main(int argc, char** argv)
     
     bool succeeded = true;
 
-    if(maxThreads > 0)
-        omp_set_num_threads(std::min(omp_get_max_threads(), maxThreads));
-
-    //#pragma omp parallel for
     for (std::size_t posReference = 0; posReference < chunk.size(); posReference++)
     {
         ALICEVISION_LOG_INFO("processing input region " << posReference + 1 << "/" << chunk.size());

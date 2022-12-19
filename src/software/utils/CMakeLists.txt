@@ -22,6 +22,7 @@ if(ALICEVISION_HAVE_UNCERTAINTYTE)
       SOURCE main_computeUncertainty.cpp
       FOLDER ${FOLDER_SOFTWARE_UTILS}
       LINKS aliceVision_sfm
+            aliceVision_system
             ${CUDA_LIBRARIES}
             ${CUDA_CUBLAS_LIBRARIES}
             ${CUDA_cusparse_LIBRARY}
@@ -71,6 +72,7 @@ alicevision_add_software(aliceVision_utils_voctreeCreation
         aliceVision_feature
         aliceVision_sfmData
         aliceVision_sfmDataIO
+        aliceVision_system
         Boost::program_options
 )
 
@@ -82,6 +84,7 @@ alicevision_add_software(aliceVision_utils_voctreeQueryUtility
         aliceVision_sfm
         aliceVision_sfmData
         aliceVision_sfmDataIO
+        aliceVision_system
         Boost::program_options
         Boost::boost
         Boost::timer
@@ -93,6 +96,7 @@ alicevision_add_software(aliceVision_utils_voctreeStatistics
   FOLDER ${FOLDER_SOFTWARE_UTILS}
   LINKS aliceVision_voctree
         aliceVision_sfmData
+        aliceVision_system
         aliceVision_sfmDataIO
         Boost::program_options
         Boost::boost
@@ -122,6 +126,7 @@ if(ALICEVISION_HAVE_ALEMBIC)
           aliceVision_localization
           aliceVision_dataio
           aliceVision_rig
+          aliceVision_system
           Boost::program_options
           Boost::filesystem
   )
@@ -189,9 +194,9 @@ alicevision_add_software(aliceVision_utils_sfmColorHarmonize
         aliceVision_sfmData
         aliceVision_sfmDataIO
         aliceVision_colorHarmonization
-        ${CLP_LIBRARIES}
-        ${COINUTILS_LIBRARY}
-        ${OSI_LIBRARY}
+        Coin::Clp
+        Coin::CoinUtils
+        Coin::Osi
         Boost::program_options
         Boost::filesystem
         Boost::boost
@@ -231,6 +236,7 @@ alicevision_add_software(aliceVision_utils_sfmDistances
   LINKS aliceVision_sfm
         aliceVision_sfmData
         aliceVision_sfmDataIO
+        aliceVision_system
         ${Boost_LIBRARIES}
 )
 
@@ -287,36 +293,38 @@ alicevision_add_software(aliceVision_utils_generateSampleScene
 )
 
 
-# # Perform color chart detection
-# if(ALICEVISION_HAVE_OPENCV)
-#   alicevision_add_software(aliceVision_utils_colorCheckerDetection
-#     SOURCE main_colorCheckerDetection.cpp
-#     FOLDER ${FOLDER_SOFTWARE_UTILS}
-#     LINKS aliceVision_system
-#           aliceVision_sfmData
-#           aliceVision_sfmDataIO
-#           Boost::program_options
-#           Boost::filesystem
-#           ${OpenCV_LIBS} # opencv_core  opencv_imgproc  opencv_video  opencv_imgcodecs  opencv_videoio  opencv_features2d  opencv_xfeatures2d
-#           opencv_mcc
-# )
-# endif()
-#
-#
-# # Perform color correction
-# if(ALICEVISION_HAVE_OPENCV)
-#   alicevision_add_software(aliceVision_utils_colorCheckerCorrection
-#     SOURCE main_colorCheckerCorrection.cpp
-#     FOLDER ${FOLDER_SOFTWARE_UTILS}
-#     LINKS aliceVision_system
-#           aliceVision_sfmData
-#           aliceVision_sfmDataIO
-#           Boost::program_options
-#           Boost::filesystem
-#           ${OpenCV_LIBS} # opencv_core  opencv_imgproc  opencv_video  opencv_imgcodecs  opencv_videoio  opencv_features2d  opencv_xfeatures2d
-#           opencv_mcc
-# )
-# endif()
+
+# Perform color chart detection
+if(ALICEVISION_HAVE_OPENCV_CONTRIB)
+  alicevision_add_software(aliceVision_utils_colorCheckerDetection
+    SOURCE main_colorCheckerDetection.cpp
+    FOLDER ${FOLDER_SOFTWARE_UTILS}
+    LINKS aliceVision_system
+          aliceVision_sfmData
+          aliceVision_sfmDataIO
+          Boost::program_options
+          Boost::filesystem
+          ${OpenCV_LIBS} # opencv_core  opencv_imgproc  opencv_video  opencv_imgcodecs  opencv_videoio  opencv_features2d  opencv_xfeatures2d
+          opencv_mcc
+)
+endif()
+
+
+# Perform color correction
+if(ALICEVISION_HAVE_OPENCV_CONTRIB)
+  alicevision_add_software(aliceVision_utils_colorCheckerCorrection
+    SOURCE main_colorCheckerCorrection.cpp
+    FOLDER ${FOLDER_SOFTWARE_UTILS}
+    LINKS aliceVision_system
+          aliceVision_sfmData
+          aliceVision_sfmDataIO
+          Boost::program_options
+          Boost::filesystem
+          ${OpenCV_LIBS} # opencv_core  opencv_imgproc  opencv_video  opencv_imgcodecs  opencv_videoio  opencv_features2d  opencv_xfeatures2d
+          opencv_mcc
+)
+endif()
+
 
 endif() # ALICEVISION_BUILD_SFM
 

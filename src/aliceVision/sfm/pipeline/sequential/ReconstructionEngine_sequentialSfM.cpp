@@ -24,6 +24,7 @@
 #include <aliceVision/robustEstimation/LORansac.hpp>
 #include <aliceVision/robustEstimation/ScoreEvaluator.hpp>
 #include <aliceVision/stl/stl.hpp>
+#include <aliceVision/system/ProgressDisplay.hpp>
 #include <aliceVision/system/Timer.hpp>
 #include <aliceVision/system/cpu.hpp>
 #include <aliceVision/system/MemoryInfo.hpp>
@@ -32,7 +33,6 @@
 
 #include <dependencies/htmlDoc/htmlDoc.hpp>
 
-#include <boost/progress.hpp>
 #include <boost/format.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -207,6 +207,8 @@ bool ReconstructionEngine_sequentialSfM::process()
     // The optimization could allow the triangulation of new landmarks
     triangulate({}, prevReconstructedViews);
     bundleAdjustment(prevReconstructedViews);
+
+    registerChanges(prevReconstructedViews);
   }
 
   // reconstruction
@@ -325,10 +327,55 @@ void ReconstructionEngine_sequentialSfM::createInitialReconstruction(const std::
     {
       // successfully found an initial image pair
       ALICEVISION_LOG_INFO("Initial pair is: " << initialPairCandidate.first << ", " << initialPairCandidate.second);
+
+      std::set<IndexT> updatedViews;
+      updatedViews.insert(initialPairCandidate.first);
+      updatedViews.insert(initialPairCandidate.second);
+      registerChanges(updatedViews);
+
       return;
     }
   }
   throw std::runtime_error("Initialization failed after trying all possible initial image pairs.");
+}
+
+void ReconstructionEngine_sequentialSfM::registerChanges(const std::set<IndexT>& newReconstructedViews)
+{
+   _registeredCandidatesViews.clear();
+
+  const sfmData::Landmarks & landmarks = _sfmData.getLandmarks();
+  for (IndexT id : newReconstructedViews)
+  {
+    const track::TrackIdSet & setTracks = _map_tracksPerView[id];
+
+    for (auto idTrack : setTracks)
+    {
+      //Check that this track is indeed a landmark
+      if (landmarks.find(idTrack) == landmarks.end())
+      {
+        continue;
+      }
+
+      //Check that this view is a registered observation of this landmark (confirmed track)
+      const Landmark & l = landmarks.at(idTrack);
+      if (l.observations.find(id) == l.observations.end())
+      {
+        continue;
+      }
+
+      const track::Track & track = _map_tracks[idTrack];
+      for (const auto & pairFeat : track.featPerView)
+      {
+          IndexT oview = pairFeat.first;
+          if (oview == id)
+          {
+              continue;
+          }
+
+          _registeredCandidatesViews.insert(oview);
+      }
+    }
+  }
 }
 
 void ReconstructionEngine_sequentialSfM::remapLandmarkIdsToTrackIds()
@@ -393,6 +440,7 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
   IndexT resectionId = 0;
 
   std::set<IndexT> remainingViewIds;
+  std::set<IndexT> candidateViewIds;
   std::vector<IndexT> bestViewCandidates;
 
   // get all viewIds and max resection id
@@ -401,11 +449,14 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
     IndexT viewId = viewPair.second->getViewId();
     IndexT viewResectionId = viewPair.second->getResectionId();
 
+    //Create a list of remaining views to estimate
     if(!_sfmData.isPoseAndIntrinsicDefined(viewId))
+    {
       remainingViewIds.insert(viewId);
+    }
 
-    if(viewResectionId != UndefinedIndexT &&
-       viewResectionId > resectionId)
+    //Make sure we can use the higher resectionIds
+    if(viewResectionId != UndefinedIndexT && viewResectionId > resectionId)
     {
       resectionId = viewResectionId + 1;
     }
@@ -432,11 +483,15 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
   }
 
   aliceVision::system::Timer timer;
-
   std::size_t nbValidPoses = 0;
   std::size_t globalIteration = 0;
+
   do
   {
+     //Compute intersection of available views and views with potential changes
+    candidateViewIds.clear();
+    std::set_intersection(remainingViewIds.begin(), remainingViewIds.end(), _registeredCandidatesViews.begin(), _registeredCandidatesViews.end(), std::inserter(candidateViewIds, candidateViewIds.end()));
+
     nbValidPoses = _sfmData.getPoses().size();
     ALICEVISION_LOG_INFO("Incremental Reconstruction start iteration " << globalIteration << ":" << std::endl
                          << "\t- # number of resection groups: " << resectionId << std::endl
@@ -444,8 +499,9 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
                          << "\t- # number of landmarks: " << _sfmData.structure.size() << std::endl
                          << "\t- # remaining images: " << remainingViewIds.size()
                          );
+
     // compute robust resection of remaining images
-    while(findNextBestViews(bestViewCandidates, remainingViewIds))
+    while (findNextBestViews(bestViewCandidates, candidateViewIds))
     {
       ALICEVISION_LOG_INFO("Update Reconstruction:" << std::endl
         << "\t- resection id: " << resectionId << std::endl
@@ -455,13 +511,30 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
       // get reconstructed views before resection
       const std::set<IndexT> prevReconstructedViews = _sfmData.getValidViews();
 
-      std::set<IndexT> newReconstructedViews = resection(resectionId, bestViewCandidates, prevReconstructedViews, remainingViewIds);
-
+      std::set<IndexT> newReconstructedViews = resection(resectionId, bestViewCandidates, prevReconstructedViews, candidateViewIds);
       if(newReconstructedViews.empty())
+      {
+        candidateViewIds.clear();
         continue;
+      }
+
 
       triangulate(prevReconstructedViews, newReconstructedViews);
       bundleAdjustment(newReconstructedViews);
+
+
+      //Erase reconstructed views from list of available views
+      for (auto v : newReconstructedViews)
+      {
+          remainingViewIds.erase(v);
+      }
+
+      //Compute the connected views to inform we have new information !
+      registerChanges(newReconstructedViews);
+
+      //Compute intersection of available views and views with potential changes
+      candidateViewIds.clear();
+      std::set_intersection(remainingViewIds.begin(), remainingViewIds.end(), _registeredCandidatesViews.begin(), _registeredCandidatesViews.end(), std::inserter(candidateViewIds, candidateViewIds.end()));
 
       // scene logging for visual debug
       if((resectionId % 3) == 0)
@@ -580,7 +653,6 @@ double ReconstructionEngine_sequentialSfM::incrementalReconstruction()
       {
         ALICEVISION_LOG_DEBUG("Resection of image " << i << " ( view id: " << viewId << " ) was not possible.");
       }
-      remainingViewIds.erase(viewId);
     }
   }
 
@@ -1248,8 +1320,8 @@ bool ReconstructionEngine_sequentialSfM::getBestInitialImagePairs(std::vector<Pa
   bestImagePairs.reserve(_pairwiseMatches->size());
   
   // Compute the relative pose & the 'baseline score'
-  boost::progress_display my_progress_bar( _pairwiseMatches->size(),
-    std::cout,"Automatic selection of an initial pair:\n" );
+  auto progressDisplay = system::createConsoleProgressDisplay(_pairwiseMatches->size(), std::cout,
+                                                              "Automatic selection of an initial pair:\n" );
 
 #pragma omp parallel for schedule(dynamic)
   for (int i = 0; i < _pairwiseMatches->size(); ++i)
@@ -1257,8 +1329,7 @@ bool ReconstructionEngine_sequentialSfM::getBestInitialImagePairs(std::vector<Pa
     matching::PairwiseMatches::const_iterator iter = _pairwiseMatches->begin();
     std::advance(iter, i);
     
-#pragma omp critical
-    ++my_progress_bar;
+    ++progressDisplay;
     
     const Pair current_pair = iter->first;
 
@@ -1666,6 +1737,45 @@ void ReconstructionEngine_sequentialSfM::getTracksToTriangulate(const std::set<I
   }
 }
 
+namespace {
+
+struct ObservationData
+{
+    std::shared_ptr<camera::Pinhole> cam;
+    Pose3 pose;
+    Mat34 P;
+    Vec2 x;
+    Vec2 xUd;
+
+    bool isEmpty() const { return cam == nullptr; }
+};
+
+ObservationData getObservationData(const SfMData& scene,
+                                   feature::FeaturesPerView* featuresPerView,
+                                   IndexT viewId, const track::Track& track)
+{
+    const View* view = scene.getViews().at(viewId).get();
+
+    std::shared_ptr<camera::IntrinsicBase> cam = scene.getIntrinsics().at(view->getIntrinsicId());
+    std::shared_ptr<camera::Pinhole> camPinHole = std::dynamic_pointer_cast<camera::Pinhole>(cam);
+
+    if (!camPinHole) {
+        ALICEVISION_LOG_ERROR("Camera is not pinhole in triangulate_multiViewsLORANSAC");
+        return {nullptr, {}, {}, {}, {}};
+    }
+
+    Pose3 pose = scene.getPose(*view).getTransform();
+    Mat34 P = camPinHole->getProjectiveEquivalent(pose);
+
+    const auto& feature = featuresPerView->getFeatures(viewId, track.descType)[track.featPerView.at(viewId)];
+    Vec2 x = feature.coords().cast<double>();
+    Vec2 xUd = cam->get_ud_pixel(x); // undistorted 2D point
+
+    return {camPinHole, pose, P, x, xUd};
+}
+
+} // namespace
+
 void ReconstructionEngine_sequentialSfM::triangulate_multiViewsLORANSAC(SfMData& scene, const std::set<IndexT>& previousReconstructedViews, const std::set<IndexT>& newReconstructedViews)
 {
   ALICEVISION_LOG_DEBUG("Triangulating (mode: multi-view LO-RANSAC)... ");
@@ -1707,34 +1817,16 @@ void ReconstructionEngine_sequentialSfM::triangulate_multiViewsLORANSAC(SfMData&
       // -- Prepare:
       IndexT I =  *(observations.begin());
       IndexT J =  *(observations.rbegin());
-      const View* viewI = scene.getViews().at(I).get();
-      const View* viewJ = scene.getViews().at(J).get();
 
-      std::shared_ptr<camera::IntrinsicBase> camI = scene.getIntrinsics().at(viewI->getIntrinsicId());
-      std::shared_ptr<camera::Pinhole> camIPinHole = std::dynamic_pointer_cast<camera::Pinhole>(camI);
-      if (!camIPinHole) {
-        ALICEVISION_LOG_ERROR("Camera is not pinhole in triangulate_multiViewsLORANSAC");
+      const auto oi = getObservationData(scene, _featuresPerView, I, track);
+      const auto oj = getObservationData(scene, _featuresPerView, J, track);
+
+      if (oi.isEmpty() || oj.isEmpty()) {
         continue;
       }
 
-      std::shared_ptr<camera::IntrinsicBase> camJ = scene.getIntrinsics().at(viewJ->getIntrinsicId());
-      std::shared_ptr<camera::Pinhole> camJPinHole = std::dynamic_pointer_cast<camera::Pinhole>(camJ);
-      if (!camJPinHole) {
-        ALICEVISION_LOG_ERROR("Camera is not pinhole in triangulate_multiViewsLORANSAC");
-        continue;
-      }
-
-      const Pose3 poseI = scene.getPose(*viewI).getTransform();
-      const Pose3 poseJ = scene.getPose(*viewJ).getTransform();
-      const Vec2 xI = _featuresPerView->getFeatures(I, track.descType)[track.featPerView.at(I)].coords().cast<double>();
-      const Vec2 xJ = _featuresPerView->getFeatures(J, track.descType)[track.featPerView.at(J)].coords().cast<double>();
-  
       // -- Triangulate:
-      multiview::TriangulateDLT(camIPinHole->getProjectiveEquivalent(poseI),
-                     camI->get_ud_pixel(xI),
-                     camJPinHole->getProjectiveEquivalent(poseJ),
-                     camI->get_ud_pixel(xJ),
-                     &X_euclidean);
+      multiview::TriangulateDLT(oi.P, oi.xUd, oj.P, oj.xUd, &X_euclidean);
 
       // -- Check:
       //  - angle (small angle leads imprecise triangulation)
@@ -1746,11 +1838,11 @@ void ReconstructionEngine_sequentialSfM::triangulate_multiViewsLORANSAC(SfMData&
       const double& acThresholdI = (acThresholdItI != _map_ACThreshold.end()) ? acThresholdItI->second : 4.0;
       const double& acThresholdJ = (acThresholdItJ != _map_ACThreshold.end()) ? acThresholdItJ->second : 4.0;
       
-      if (angleBetweenRays(poseI, camI.get(), poseJ, camJ.get(), xI, xJ) < _params.minAngleForTriangulation ||
-          poseI.depth(X_euclidean) < 0 || 
-          poseJ.depth(X_euclidean) < 0 || 
-          camI->residual(poseI, X_euclidean.homogeneous(), xI).norm() > acThresholdI || 
-          camJ->residual(poseJ, X_euclidean.homogeneous(), xJ).norm() > acThresholdJ)
+      if (angleBetweenRays(oi.pose, oi.cam.get(), oj.pose, oj.cam.get(), oi.x, oj.x) < _params.minAngleForTriangulation ||
+          oi.pose.depth(X_euclidean) < 0 ||
+          oj.pose.depth(X_euclidean) < 0 ||
+          oi.cam->residual(oi.pose, X_euclidean.homogeneous(), oi.x).norm() > acThresholdI ||
+          oj.cam->residual(oj.pose, X_euclidean.homogeneous(), oj.x).norm() > acThresholdJ)
         isValidTrack = false;
     }
     else 
@@ -1768,19 +1860,15 @@ void ReconstructionEngine_sequentialSfM::triangulate_multiViewsLORANSAC(SfMData&
         int i = 0;
         for (const IndexT& viewId : observations)
         {
-          const View* view = scene.getViews().at(viewId).get();
-  
-          std::shared_ptr<camera::IntrinsicBase> cam = scene.getIntrinsics().at(view->getIntrinsicId());
-          std::shared_ptr<camera::Pinhole> camPinHole = std::dynamic_pointer_cast<camera::Pinhole>(cam);
-          if (!camPinHole) {
-            ALICEVISION_LOG_ERROR("Camera is not pinhole in triangulate_multiViewsLORANSAC");
+          const auto o = getObservationData(scene, _featuresPerView, viewId, track);
+
+          if (o.isEmpty()) {
             continue;
           }
 
-          const Vec2 x_ud = cam->get_ud_pixel(_featuresPerView->getFeatures(viewId, track.descType)[track.featPerView.at(viewId)].coords().cast<double>()); // undistorted 2D point
-          features(0,i) = x_ud(0); 
-          features(1,i) = x_ud(1);  
-          Ps.push_back(camPinHole->getProjectiveEquivalent(scene.getPose(*view).getTransform()));
+          features(0,i) = o.xUd(0);
+          features(1,i) = o.xUd(1);
+          Ps.push_back(o.P);
           i++;
         }
       }

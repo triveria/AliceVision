@@ -8,11 +8,11 @@
 #include <aliceVision/sfmData/SfMData.hpp>
 #include <aliceVision/sfmDataIO/sfmDataIO.hpp>
 #include <aliceVision/image/all.hpp>
+#include <aliceVision/system/ProgressDisplay.hpp>
 #include <aliceVision/system/main.hpp>
-
+#include <aliceVision/system/cmdline.hpp>
 #include <boost/program_options.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/progress.hpp>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -68,7 +68,8 @@ bool exportToPMVSFormat(
 
   if (bOk)
   {
-    boost::progress_display my_progress_bar( sfm_data.getViews().size()*2 );
+    auto progressDisplay = system::createConsoleProgressDisplay(sfm_data.getViews().size() * 2,
+                                                                std::cout);
 
     // Since PMVS requires contiguous camera index, and that some views can have some missing poses,
     // we reindex the poses to ensure a contiguous pose list.
@@ -76,7 +77,7 @@ bool exportToPMVSFormat(
 
     // Export valid views as Projective Cameras:
     for(Views::const_iterator iter = sfm_data.getViews().begin();
-      iter != sfm_data.getViews().end(); ++iter, ++my_progress_bar)
+      iter != sfm_data.getViews().end(); ++iter, ++progressDisplay)
     {
       const View * view = iter->second.get();
       if (!sfm_data.isPoseAndIntrinsicDefined(view))
@@ -108,7 +109,7 @@ bool exportToPMVSFormat(
     // Export (calibrated) views as undistorted images
     Image<RGBColor> image, image_ud;
     for(Views::const_iterator iter = sfm_data.getViews().begin();
-      iter != sfm_data.getViews().end(); ++iter, ++my_progress_bar)
+      iter != sfm_data.getViews().end(); ++iter, ++progressDisplay)
     {
       const View * view = iter->second.get();
       if (!sfm_data.isPoseAndIntrinsicDefined(view))
@@ -127,7 +128,8 @@ bool exportToPMVSFormat(
         // undistort the image and save it
         readImage( srcImage, image, image::EImageColorSpace::NO_CONVERSION);
         UndistortImage(image, cam, image_ud, BLACK);
-        writeImage(dstImage, image_ud, image::EImageColorSpace::NO_CONVERSION);
+        writeImage(dstImage, image_ud,
+                   image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
       }
       else // (no distortion)
       {
@@ -140,7 +142,8 @@ bool exportToPMVSFormat(
         else
         {
           readImage(srcImage, image, image::EImageColorSpace::NO_CONVERSION);
-          writeImage(dstImage, image, image::EImageColorSpace::NO_CONVERSION);
+          writeImage(dstImage, image,
+                     image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::NO_CONVERSION));
         }
       }
     }
@@ -325,16 +328,12 @@ bool exportToBundlerFormat(
 int aliceVision_main(int argc, char *argv[])
 {
   // command-line parameters
-
-  std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
   std::string sfmDataFilename;
   std::string outputFolder;
 
   int resolution = 1;
   int nbCore = 8;
   bool useVisData = true;
-
-  po::options_description allParams("AliceVision exportPMVS");
 
   po::options_description requiredParams("Required parameters");
   requiredParams.add_options()
@@ -352,40 +351,13 @@ int aliceVision_main(int argc, char *argv[])
     ("useVisData", po::value<bool>(&useVisData)->default_value(useVisData),
       "Use visibility information.");
 
-  po::options_description logParams("Log parameters");
-  logParams.add_options()
-    ("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-      "verbosity level (fatal,  error, warning, info, debug, trace).");
-
-  allParams.add(requiredParams).add(optionalParams).add(logParams);
-
-  po::variables_map vm;
-  try
+  CmdLine cmdline("AliceVision exportPMVS");
+  cmdline.add(requiredParams);
+  cmdline.add(optionalParams);
+  if (!cmdline.execute(argc, argv))
   {
-    po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-    if(vm.count("help") || (argc == 1))
-    {
-      ALICEVISION_COUT(allParams);
-      return EXIT_SUCCESS;
-    }
-    po::notify(vm);
+      return EXIT_FAILURE;
   }
-  catch(boost::program_options::required_option& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-  catch(boost::program_options::error& e)
-  {
-    ALICEVISION_CERR("ERROR: " << e.what());
-    ALICEVISION_COUT("Usage:\n\n" << allParams);
-    return EXIT_FAILURE;
-  }
-
-  // set verbose level
-  system::Logger::get()->setLogLevel(verboseLevel);
 
   // Create output dir
   if (!fs::exists(outputFolder))

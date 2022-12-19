@@ -63,7 +63,8 @@ trilean_option(ALICEVISION_USE_OPENGV "Enable use of OpenGV algorithms" AUTO)
 trilean_option(ALICEVISION_USE_ALEMBIC "Enable Alembic I/O" AUTO)
 trilean_option(ALICEVISION_USE_UNCERTAINTYTE "Enable Uncertainty computation" AUTO)
 trilean_option(ALICEVISION_USE_CUDA "Enable CUDA" ON)
-trilean_option(ALICEVISION_USE_OPENCV "Build opencv+aliceVision samples programs" OFF)
+trilean_option(ALICEVISION_USE_OPENCV "Enable use of OpenCV algorithms" OFF)
+trilean_option(ALICEVISION_USE_OPENCV_CONTRIB "Enable use of OpenCV algorithms from extra modules" AUTO)
 option(ALICEVISION_USE_OCVSIFT "Add or not OpenCV SIFT in available features" OFF)
 mark_as_advanced(FORCE ALICEVISION_USE_OCVSIFT)
 
@@ -125,6 +126,10 @@ if(WIN32)
   endif()
 endif()
 
+# Avoids deprecation warning caused by internals of json_parser. This is properly fixed in
+# Boost 1.76.0: https://github.com/boostorg/property_tree/commit/d1c8825a45a0717e1ad79583d3283b0e5e32831e
+add_definitions(-DBOOST_BIND_GLOBAL_PLACEHOLDERS=1)
+
 # Folders
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMakePredefinedTargets")
@@ -167,7 +172,7 @@ endmacro(add_target_properties)
 # ==============================================================================
 # Check that submodule have been initialized and updated
 # ==============================================================================
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/CoinUtils)
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/flann/src)
   message(FATAL_ERROR
     "\n submodule(s) are missing, please update your repository:\n"
     "  > git submodule update -i\n")
@@ -199,6 +204,25 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   AddCompilerFlag("-Werror=return-type")
   AddCompilerFlag("-Werror=switch")
   AddCompilerFlag("-Werror=return-local-addr")
+endif()
+
+# Eigen requires overaligned buffers for maximum efficiency (e.g. on AVX512 buffers may need to
+# be aligned to 64 bytes). AliceVision currently does not support this. Fortunately this is fixed
+# in C++17. While we can't upgrade to C++17 just yet, some compilers support overaligned
+# allocation feature with a separate flag, so use it if alignment is enabled in Eigen.
+# See https://eigen.tuxfamily.org/dox/group__TopicUnalignedArrayAssert.html
+if(AV_EIGEN_MEMORY_ALIGNMENT)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 7.1)
+    AddCompilerFlag("-faligned-new")
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 6.0)
+    AddCompilerFlag("-faligned-new")
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 10.0)
+    AddCompilerFlag("-faligned-new")
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19.12)
+    AddCompilerFlag("/Zc:alignedNew")
+  else()
+    message(FATAL_ERROR "AV_EIGEN_MEMORY_ALIGNMENT is only supported starting GCC 7.1, Clang 6.0 and MSVC 2017 15.5")
+  endif()
 endif()
 
 # ==============================================================================
@@ -307,10 +331,6 @@ endif()
 find_package(OpenImageIO 2.0.9 REQUIRED)
 if(OPENIMAGEIO_FOUND OR OpenImageIO_FOUND)
   message(STATUS "OpenImageIO found.")
-  if(UNIX)
-    # Add DL dependency on linux
-    set(OPENIMAGEIO_LIBRARIES "${OPENIMAGEIO_LIBRARIES};dl")
-  endif()
 else()
   message(SEND_ERROR "Failed to find OpenImageIO.")
 endif()
@@ -323,12 +343,7 @@ set(ALICEVISION_HAVE_MOSEK 0)
 if(ALICEVISION_BUILD_SFM)
   find_package(Mosek)
   if(MOSEK_FOUND)
-    set(ALICEVISION_HAVE_MOSEK 1)
-    set(LP_INCLUDE_DIRS
-      ${MOSEK_INCLUDE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Osi/src/OsiMsk/
-    )
-    include_directories(${LP_INCLUDE_DIRS})
+    find_package(Coin::OsiMsk)
   endif()
 
   #Install RULES
@@ -346,8 +361,11 @@ endif()
 find_package(Eigen3 3.3 REQUIRED)
 if(Eigen3_FOUND OR EIGEN3_FOUND)
   # message(STATUS "EIGEN_INCLUDE_DIR: ${EIGEN_INCLUDE_DIR}")
-  # See https://eigen.tuxfamily.org/dox/group__TopicUnalignedArrayAssert.html
-  set(AV_EIGEN_DEFINITIONS -DEIGEN_MAX_ALIGN_BYTES=0 -DEIGEN_MAX_STATIC_ALIGN_BYTES=0)
+  if(AV_EIGEN_MEMORY_ALIGNMENT)
+    set(AV_EIGEN_DEFINITIONS -DALICEVISION_EIGEN_REQUIRE_ALIGNMENT=1)
+  else()
+    set(AV_EIGEN_DEFINITIONS -DEIGEN_MAX_ALIGN_BYTES=0 -DEIGEN_MAX_STATIC_ALIGN_BYTES=0)
+  endif()
 else()
   message(FATAL_ERROR " EIGEN NOT FOUND. EIGEN_INCLUDE_DIR: ${EIGEN_INCLUDE_DIR}")
 endif()
@@ -409,72 +427,12 @@ if(ALICEVISION_BUILD_SFM)
 endif()
 
 # ==============================================================================
-# CoinUtils
-# ==============================================================================
-# - internal by default (CoinUtils),
-# - external if COINUTILS_INCLUDE_DIR_HINTS and a valid CoinUtils setup is found
+# CoinUtils, Clp, Osi
 # ==============================================================================
 if(ALICEVISION_BUILD_SFM)
-  if(NOT DEFINED COINUTILS_INCLUDE_DIR_HINTS)
-    set(COINUTILS_INCLUDE_DIR_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/CoinUtils/src/)
-    set(ALICEVISION_USE_INTERNAL_COINUTILS ON)
-  endif()
-  find_package(CoinUtils QUIET)
-  if(NOT COINUTILS_FOUND OR ALICEVISION_USE_INTERNAL_COINUTILS)
-    set(COINUTILS_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/CoinUtils/src/)
-    set(COINUTILS_LIBRARY lib_CoinUtils)
-  endif()
-endif()
-
-## ==============================================================================
-## Clp
-## ==============================================================================
-## - internal by default (Clp),
-## - external if CLP_INCLUDE_DIR_HINTS and a valid Clp setup is found
-## ==============================================================================
-if(ALICEVISION_BUILD_SFM)
-  if(NOT DEFINED CLP_INCLUDE_DIR_HINTS)
-    set(CLP_INCLUDE_DIR_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Clp/src/)
-    set(ALICEVISION_USE_INTERNAL_CLP ON)
-  endif()
-  find_package(Clp QUIET)
-  if(NOT CLP_FOUND OR ALICEVISION_USE_INTERNAL_CLP)
-    set(CLP_INCLUDE_DIRS
-       ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Clp/src/
-       ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Clp/src/OsiClp/)
-    set(CLP_LIBRARIES lib_clp lib_OsiClpSolver)
-  endif()
-endif()
-
-# ==============================================================================
-# Osi
-# ==============================================================================
-# - internal by default (Osi),
-# - external if OSI_INCLUDE_DIR_HINTS and a valid Osi setup is found
-# ==============================================================================
-if(ALICEVISION_BUILD_SFM)
-  if(NOT DEFINED OSI_INCLUDE_DIR_HINTS)
-    set(OSI_INCLUDE_DIR_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Osi/src/)
-    set(ALICEVISION_USE_INTERNAL_OSI ON)
-  endif()
-  find_package(Osi QUIET)
-  if(NOT OSI_FOUND OR ALICEVISION_USE_INTERNAL_OSI)
-    set(OSI_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/osi_clp/Osi/src/Osi/)
-    set(OSI_LIBRARY lib_Osi)
-  endif()
-endif()
-
-# ==============================================================================
-# Internal CLP/OSI/COINUTILS libraries
-# ==============================================================================
-if(ALICEVISION_BUILD_SFM)
-  if(ALICEVISION_USE_INTERNAL_OSI AND ALICEVISION_USE_INTERNAL_CLP AND ALICEVISION_USE_INTERNAL_COINUTILS)
-    add_subdirectory(dependencies/osi_clp/)
-    set_property(TARGET lib_clp PROPERTY FOLDER Dependencies/Lib_clp)
-    set_property(TARGET lib_CoinUtils PROPERTY FOLDER Dependencies/Lib_CoinUtils)
-    set_property(TARGET lib_Osi PROPERTY FOLDER Dependencies/Lib_Osi)
-    set_property(TARGET lib_OsiClpSolver PROPERTY FOLDER Dependencies/Lib_OsiClpSolver)
-  endif()
+  find_package(CoinUtils REQUIRED)
+  find_package(Clp REQUIRED)
+  find_package(Osi REQUIRED)
 endif()
 
 # ==============================================================================
@@ -516,7 +474,7 @@ set(ALICEVISION_HAVE_OCVSIFT 0)
 
 if(ALICEVISION_BUILD_SFM)
   if(NOT ALICEVISION_USE_OPENCV STREQUAL "OFF")
-    find_package(OpenCV COMPONENTS core imgproc video imgcodecs videoio features2d)
+    find_package(OpenCV COMPONENTS core imgproc video imgcodecs videoio features2d photo)
 
     if(OpenCV_FOUND)
       # We do not set the minimal version directly in find_package
@@ -532,6 +490,16 @@ if(ALICEVISION_BUILD_SFM)
       endif()
 
     elseif(ALICEVISION_USE_OPENCV STREQUAL "ON")
+      message(SEND_ERROR "Failed to find OpenCV.")
+    endif()
+  endif()
+
+  if(NOT ALICEVISION_USE_OPENCV_CONTRIB STREQUAL "OFF")
+    find_package(OpenCV COMPONENTS mcc)
+    if(OpenCV_FOUND)
+      set(ALICEVISION_HAVE_OPENCV_CONTRIB 1)
+      message(STATUS "OpenCV contrib found.")
+    elseif(ALICEVISION_USE_OPENCV_CONTRIB STREQUAL "ON")
       message(SEND_ERROR "Failed to find OpenCV.")
     endif()
   endif()
@@ -921,7 +889,9 @@ else()
               PROPERTY FOLDER AliceVision
               )
 
-      install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/doc  DESTINATION ${CMAKE_INSTALL_DOCDIR})
+      if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/doc)
+        install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/doc  DESTINATION ${CMAKE_INSTALL_DOCDIR})
+      endif()
 
     endif()
   endif()
@@ -964,23 +934,9 @@ if(ALICEVISION_BUILD_SFM)
     message(STATUS "FLANN: " ${FLANN_VERSION} " (external)")
   endif()
 
-  if(ALICEVISION_USE_INTERNAL_CLP)
-    message(STATUS "CLP: " ${CLP_VERSION} " (internal)")
-  else()
-    message(STATUS "CLP: " ${CLP_VERSION} " (external)")
-  endif()
-
-  if(ALICEVISION_USE_INTERNAL_COINUTILS)
-    message(STATUS "COINUTILS: " ${COINUTILS_VERSION} " (internal)")
-  else()
-    message(STATUS "COINUTILS: " ${COINUTILS_VERSION} " (external)")
-  endif()
-
-  if(ALICEVISION_USE_INTERNAL_OSI)
-    message(STATUS "OSI: " ${OSI_VERSION} " (internal)")
-  else()
-    message(STATUS "OSI: " ${OSI_VERSION} " (external)")
-  endif()
+  message(STATUS "CLP: " ${Clp_VERSION} "")
+  message(STATUS "COINUTILS: " ${CoinUtils_VERSION} "")
+  message(STATUS "OSI: " ${Osi_VERSION} "")
 
   if(ALICEVISION_USE_INTERNAL_LEMON)
     message(STATUS "LEMON: " ${LEMON_VERSION} " (internal)")

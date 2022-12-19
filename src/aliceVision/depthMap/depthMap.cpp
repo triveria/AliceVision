@@ -9,12 +9,16 @@
 #include <aliceVision/system/Logger.hpp>
 #include <aliceVision/mvsUtils/MultiViewParams.hpp>
 #include <aliceVision/mvsUtils/fileIO.hpp>
-#include <aliceVision/mvsData/imageIO.hpp>
+#include <aliceVision/image/io.hpp>
 #include <aliceVision/depthMap/Refine.hpp>
 #include <aliceVision/depthMap/RefineParams.hpp>
 #include <aliceVision/depthMap/Sgm.hpp>
 #include <aliceVision/depthMap/SgmParams.hpp>
 #include <aliceVision/depthMap/cuda/PlaneSweepingCuda.hpp>
+
+#include <boost/filesystem.hpp>
+
+namespace fs = boost::filesystem;
 
 namespace aliceVision {
 namespace depthMap {
@@ -69,7 +73,7 @@ void estimateAndRefineDepthMaps(int cudaDeviceIndex, mvsUtils::MultiViewParams& 
     computeScaleStepSgmParams(mp, sgmParams);
 
     // load images from files into RAM
-    mvsUtils::ImagesCache<ImageRGBAf> ic(mp, imageIO::EImageColorSpace::LINEAR);
+    mvsUtils::ImagesCache<image::Image<image::RGBAfColor>> ic(mp, image::EImageColorSpace::LINEAR);
 
     // load stuff on GPU memory and creates multi-level images and computes gradients
     PlaneSweepingCuda cps(cudaDeviceIndex, ic, mp, sgmParams.scale);
@@ -105,13 +109,11 @@ void estimateAndRefineDepthMaps(int cudaDeviceIndex, mvsUtils::MultiViewParams& 
 
 void computeNormalMaps(int cudaDeviceIndex, mvsUtils::MultiViewParams& mp, const std::vector<int>& cams)
 {
-    using namespace imageIO;
-    
     const float gammaC = 1.0f;
     const float gammaP = 1.0f;
     const int wsh = 3;
 
-    mvsUtils::ImagesCache<ImageRGBAf> ic(mp, EImageColorSpace::LINEAR);
+    mvsUtils::ImagesCache<image::Image<image::RGBAfColor>> ic(mp, image::EImageColorSpace::LINEAR);
     PlaneSweepingCuda cps(cudaDeviceIndex, ic, mp, 1);
 
     NormalMapping* mapping = cps.createNormalMapping();
@@ -120,18 +122,18 @@ void computeNormalMaps(int cudaDeviceIndex, mvsUtils::MultiViewParams& mp, const
     {
         const std::string normalMapFilepath = getFileNameFromIndex(mp, rc, mvsUtils::EFileType::normalMap, 0);
 
-        if(!mvsUtils::FileExists(normalMapFilepath))
+        if (!fs::exists(normalMapFilepath))
         {
-            std::vector<float> depthMap;
-            int w = 0;
-            int h = 0;
-            readImage(getFileNameFromIndex(mp, rc, mvsUtils::EFileType::depthMap, 0), w, h, depthMap, EImageColorSpace::NO_CONVERSION);
+            image::Image<float> depthMap;
+            readImage(getFileNameFromIndex(mp, rc, mvsUtils::EFileType::depthMap, 0), depthMap,
+                      image::EImageColorSpace::NO_CONVERSION);
 
-            std::vector<ColorRGBf> normalMap;
-            normalMap.resize(mp.getWidth(rc) * mp.getHeight(rc));
+            image::Image<image::RGBfColor> normalMap(mp.getWidth(rc), mp.getHeight(rc));
 
             cps.computeNormalMap(mapping, depthMap, normalMap, rc, 1, gammaC, gammaP, wsh);
-            writeImage(normalMapFilepath, mp.getWidth(rc), mp.getHeight(rc), normalMap, EImageQuality::LOSSLESS, OutputFileColorSpace(EImageColorSpace::NO_CONVERSION));
+            image::writeImage(normalMapFilepath, normalMap,
+                              image::ImageWriteOptions().toColorSpace(image::EImageColorSpace::LINEAR)
+                                                        .storageDataType(image::EStorageDataType::Float));
         }
     }
     cps.deleteNormalMapping(mapping);

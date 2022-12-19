@@ -59,7 +59,7 @@ struct XMPData
 };
 
 
-XMPData read_xmp(const std::string& xmpFilepath, std::string knownPosesFilePath, std::string stem, fs::directory_entry pathIt)
+XMPData read_xmp(const std::string& xmpFilepath, const std::string& knownPosesFilePath, const std::string& stem, fs::directory_entry pathIt)
 {
     XMPData xmp;
     const fs::path path = pathIt.path();
@@ -93,7 +93,7 @@ XMPData read_xmp(const std::string& xmpFilepath, std::string knownPosesFilePath,
     ALICEVISION_LOG_TRACE("stem: " << stem);
     ALICEVISION_LOG_TRACE("rotation: " << rotationStrings);
 
-    for(std::string rot_val : rotationStrings)
+    for (const auto& rot_val : rotationStrings)
     {
         xmp.rotation.push_back(std::stod(rot_val));
     }
@@ -111,7 +111,7 @@ XMPData read_xmp(const std::string& xmpFilepath, std::string knownPosesFilePath,
         boost::split(positionStrings, positionStr, boost::is_any_of(" \t"), boost::token_compress_on);
     }
 
-    for(std::string pos_val : positionStrings)
+    for (const auto& pos_val : positionStrings)
     {
         xmp.position.push_back(std::stod(pos_val));
     }
@@ -121,7 +121,7 @@ XMPData read_xmp(const std::string& xmpFilepath, std::string knownPosesFilePath,
     boost::split(distortionStrings, distortionStr, boost::is_any_of(" \t"), boost::token_compress_on);
     ALICEVISION_LOG_TRACE("distortion: " << distortionStrings);
 
-    for(std::string disto_val : distortionStrings)
+    for (const auto& disto_val : distortionStrings)
     {
         xmp.distortionCoefficients.push_back(std::stod(disto_val));
     }
@@ -132,14 +132,11 @@ XMPData read_xmp(const std::string& xmpFilepath, std::string knownPosesFilePath,
 int aliceVision_main(int argc, char **argv)
 {
   // command-line parameters
-  std::string verboseLevel = system::EVerboseLevel_enumToString(system::Logger::getDefaultVerboseLevel());
   std::string knownPosesFilePath;
   std::string sfmDataFilePath;
   std::string outputFilename;
 
   sfmData::SfMData sfmData;
-
-  po::options_description allParams("AliceVision importKnownPoses");
 
   // enter the parameter
   po::options_description requiredParams("Required parameters");
@@ -148,41 +145,13 @@ int aliceVision_main(int argc, char **argv)
       ("sfmData", po::value<std::string>(&sfmDataFilePath)->required(), "SfmData filepath.")
       ("output,o", po::value<std::string>(&outputFilename)->required(), "Output sfmData filepath.");
 
-  po::options_description logParams("Log parameters");
-  logParams.add_options()("verboseLevel,v", po::value<std::string>(&verboseLevel)->default_value(verboseLevel),
-                          "verbosity level (fatal,  error, warning, info, debug, trace).");
-
-  allParams.add(requiredParams).add(logParams);
-
-  po::variables_map vm;
-
-  try
+  CmdLine cmdline("AliceVision importKnownPoses");
+  cmdline.add(requiredParams);
+  if (!cmdline.execute(argc, argv))
   {
-      po::store(po::parse_command_line(argc, argv, allParams), vm);
-
-      if(vm.count("help") || (argc == 1))
-      {
-          ALICEVISION_COUT(allParams);
-          return EXIT_SUCCESS;
-      }
-
-      po::notify(vm);
-  }
-  catch(boost::program_options::required_option& e)
-  {
-      ALICEVISION_CERR("ERROR: " << e.what() << std::endl);
-      ALICEVISION_COUT("Usage:\n\n" << allParams);
-      return EXIT_FAILURE;
-  }
-  catch(boost::program_options::error& e)
-  {
-      ALICEVISION_CERR("ERROR: " << e.what() << std::endl);
-      ALICEVISION_COUT("Usage:\n\n" << allParams);
       return EXIT_FAILURE;
   }
 
-  ALICEVISION_COUT("Program called with the following parameters:");
-  ALICEVISION_COUT(vm);
 
   // Loading the sfmData to modify it
   if(!sfmDataIO::Load(sfmData, sfmDataFilePath, sfmDataIO::ESfMData::ALL))
