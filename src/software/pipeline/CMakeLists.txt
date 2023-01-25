@@ -514,3 +514,18 @@ alicevision_add_software(aliceVision_LdrToHdrMerge
 )
 
 endif() 
+
+if(ALICEVISION_HAVE_OPENCV)
+    # SphereDetection
+    alicevision_add_software(aliceVision_sphereDetection
+    SOURCE main_sphereDetection.cpp
+    FOLDER ${FOLDER_SOFTWARE_PIPELINE}
+    LINKS aliceVision_image
+          aliceVision_sphereDetection
+          aliceVision_sfmData
+          aliceVision_sfmDataIO
+          Boost::program_options
+          ${OpenCV_LIBRARIES}
+          ${onnxruntime_LIBRARY}
+    )
+endif()
