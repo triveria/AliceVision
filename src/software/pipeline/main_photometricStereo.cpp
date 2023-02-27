@@ -40,6 +40,8 @@
 #define ALICEVISION_SOFTWARE_VERSION_MAJOR 0
 #define ALICEVISION_SOFTWARE_VERSION_MINOR 1
 
+using namespace aliceVision;
+
 int aliceVision_main(int argc, char **argv)
 {
     namespace po = boost::program_options;
@@ -108,23 +110,23 @@ int aliceVision_main(int argc, char **argv)
         pathToLightData = inputPath;
     }
 
-    aliceVision::image::Image<aliceVision::image::RGBfColor> normalsIm;
-    aliceVision::image::Image<aliceVision::image::RGBfColor> albedoIm;
+    image::Image<image::RGBfColor> normalsIm;
+    image::Image<image::RGBfColor> albedoIm;
 
     if(boost::filesystem::is_directory(inputPath))
     {
-        photometricStereo(inputPath, pathToLightData, outputPath, HS_order, removeAmbiant, isRobust, downscale, normalsIm, albedoIm);
+        photometricStereo::photometricStereo(inputPath, pathToLightData, outputPath, HS_order, removeAmbiant, isRobust, downscale, normalsIm, albedoIm);
     }
     else
     {
-      aliceVision::sfmData::SfMData sfmData;
-      if(!aliceVision::sfmDataIO::Load(sfmData, inputPath, aliceVision::sfmDataIO::ESfMData(aliceVision::sfmDataIO::VIEWS|aliceVision::sfmDataIO::INTRINSICS)))
+      sfmData::SfMData sfmData;
+      if(!sfmDataIO::Load(sfmData, inputPath, sfmDataIO::ESfMData(sfmDataIO::VIEWS|sfmDataIO::INTRINSICS)))
       {
           ALICEVISION_LOG_ERROR("The input file '" + inputPath + "' cannot be read");
           return EXIT_FAILURE;
       }
 
-      photometricStereo(sfmData, pathToLightData, maskPath, outputPath, HS_order, removeAmbiant, isRobust, downscale, normalsIm, albedoIm);
+      photometricStereo::photometricStereo(sfmData, pathToLightData, maskPath, outputPath, HS_order, removeAmbiant, isRobust, downscale, normalsIm, albedoIm);
     }
 
     return 0;
