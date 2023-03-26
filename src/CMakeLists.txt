@@ -868,7 +868,7 @@ else()
       set(SPHINX_HTML_DIR "${CMAKE_CURRENT_BINARY_DIR}/htmlDoc")
 
       configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/../docs/sphinx/rst/conf.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../docs/sphinx/conf.py"
         "${CMAKE_CURRENT_BINARY_DIR}/conf.py"
         @ONLY
       )
@@ -876,7 +876,7 @@ else()
       add_custom_target(doc ALL
         ${SPHINX_EXECUTABLE}
         -b html
-        "${CMAKE_CURRENT_SOURCE_DIR}/../docs/sphinx/rst"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../docs/sphinx"
         "${SPHINX_HTML_DIR}"
         COMMENT "Building HTML documentation with Sphinx")
 
@@ -951,9 +951,9 @@ if(ALICEVISION_BUILD_SFM)
     message(STATUS "FLANN: " ${FLANN_VERSION} " (external)")
   endif()
 
-  message(STATUS "CLP: " ${Clp_VERSION} "")
-  message(STATUS "COINUTILS: " ${CoinUtils_VERSION} "")
-  message(STATUS "OSI: " ${Osi_VERSION} "")
+  message(STATUS "CLP: " ${CLP_VERSION} "")
+  message(STATUS "COINUTILS: " ${COINUTILS_VERSION} "")
+  message(STATUS "OSI: " ${OSI_VERSION} "")
 
   if(ALICEVISION_USE_INTERNAL_LEMON)
     message(STATUS "LEMON: " ${LEMON_VERSION} " (internal)")

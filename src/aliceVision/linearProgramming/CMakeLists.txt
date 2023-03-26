@@ -10,9 +10,9 @@ set(linearProgramming_files_headers
 set(aliceVision_linearProgramming_DEPS
   aliceVision_numeric
   aliceVision_system
-  Coin::Clp        # clp + solver wrapper
-  Coin::CoinUtils  # container tools
-  Coin::Osi        # generic LP
+  ${CLP_LIBRARIES}     # clp + solver wrapper
+  ${COINUTILS_LIBRARY} # container tools
+  ${OSI_LIBRARY}       # generic LP
 )
 
 if (NOT MOSEK_FOUND)
